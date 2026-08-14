@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "id": "andrew.radar",
+  "name": "Radar",
+  "version": "1.0.0",
+  "author": "andrew",
+  "description": "Animated Environment Canada weather radar loop",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Radar",
+    "description": "Animated Environment Canada weather radar loop",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "center",
+    "defaults": {
+      "latitude": 43.65,
+      "longitude": -79.38,
+      "spanKm": 280,
+      "locationName": "Toronto",
+      "frames": 12,
+      "frameMs": 250,
+      "holdMs": 1000,
+      "pollMinutes": 30
+    },
+    "schema": [
+      { "key": "latitude", "type": "number", "label": "Latitude" },
+      { "key": "longitude", "type": "number", "label": "Longitude" },
+      { "key": "spanKm", "type": "number", "label": "Map span (km)" },
+      { "key": "locationName", "type": "string", "label": "Location name" },
+      { "key": "frames", "type": "number", "label": "Frames in loop" },
+      { "key": "frameMs", "type": "number", "label": "Frame duration (ms)" },
+      { "key": "holdMs", "type": "number", "label": "Newest-frame hold (ms)" },
+      { "key": "pollMinutes", "type": "number", "label": "Background refresh (minutes)" }
+    ]
+  }
+}
