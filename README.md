@@ -22,6 +22,11 @@ Government of Canada basemap.
   see is never staler than the radar's own publishing lag. Overlapping
   frames are served from Qt's pixmap cache; only genuinely new timestamps
   are downloaded.
+- **Dark basemap** — on a dark desktop the bright CBMT paper map is run
+  through an invert + 180° hue-rotate shader, so opening the panel doesn't
+  flash white. Water stays blue, roads stay yellow, and the radar returns
+  above it are left untouched. Follows the desktop's light/dark setting
+  live; see `darkMap` below.
 - **Graceful degradation** — on fetch failure the last loop stays visible
   with an "Offline" note; partial frame failures are counted in the
   footer.
@@ -64,7 +69,8 @@ All keys are optional; defaults shown:
   "frames": 12,
   "frameMs": 250,
   "holdMs": 1000,
-  "pollMinutes": 30
+  "pollMinutes": 30,
+  "darkMap": "auto"
 }
 ```
 
@@ -75,6 +81,16 @@ All keys are optional; defaults shown:
   window GeoMet serves).
 - `frameMs` / `holdMs` — animation speed and newest-frame hold.
 - `pollMinutes` — background refresh cadence while the panel is closed.
+- `darkMap` — `auto` (follow the desktop), `on`, or `off`. Unknown values
+  fall back to `auto`.
+
+Dark mode is detected from Qt's `Application.styleHints.colorScheme`, which
+the platform theme (gtk3) feeds from the same
+`org.gnome.desktop.interface color-scheme` key omarchy sets when you switch
+themes — so the map flips as soon as the theme does, without a restart. If
+no platform theme answers, the widget falls back to the luminance of the
+shell theme's background colour, using the same `R+G+B > 382` rule as
+`omarchy-theme-color`.
 
 ## How it works
 
@@ -88,6 +104,12 @@ Two WMS services, no API keys:
   [CBMT](https://www.nrcan.gc.ca/earth-sciences/geography/topographic-information/web-services/9110)
   WMS, requested with the same `EPSG:4326` bounding box so the layers
   stack exactly.
+
+The dark basemap is a small `ShaderEffect` applied as the basemap `Image`'s
+`layer.effect` (only when it is actually on — in light mode the layer is
+disabled and the render path is unchanged). Qt needs shaders precompiled, so
+`shaders/darkmap.frag.qsb` is committed alongside its GLSL source; rebuild it
+with `shaders/build.sh` (needs `qt6-shadertools`) after editing the `.frag`.
 
 The panel is a Quickshell/QML component following the Omarchy shell's
 `bar-widget` plugin contract (`manifest.json` + `BarWidget.qml` +

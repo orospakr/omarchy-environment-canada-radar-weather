@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "andrew.radar",
   "name": "Radar",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "andrew",
   "description": "Animated Environment Canada weather radar loop",
   "kinds": [
@@ -25,7 +25,8 @@
       "frames": 12,
       "frameMs": 250,
       "holdMs": 1000,
-      "pollMinutes": 30
+      "pollMinutes": 30,
+      "darkMap": "auto"
     },
     "schema": [
       { "key": "latitude", "type": "number", "label": "Latitude" },
@@ -35,7 +36,8 @@
       { "key": "frames", "type": "number", "label": "Frames in loop" },
       { "key": "frameMs", "type": "number", "label": "Frame duration (ms)" },
       { "key": "holdMs", "type": "number", "label": "Newest-frame hold (ms)" },
-      { "key": "pollMinutes", "type": "number", "label": "Background refresh (minutes)" }
+      { "key": "pollMinutes", "type": "number", "label": "Background refresh (minutes)" },
+      { "key": "darkMap", "type": "string", "label": "Dark basemap (auto/on/off)" }
     ]
   }
 }

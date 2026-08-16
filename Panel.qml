@@ -83,6 +83,36 @@ Panel {
   readonly property int holdMs: Math.max(stepMs, parseInt(setting("holdMs", 1000), 10) || 1000)
   readonly property int pollMinutes: Math.max(1, parseInt(setting("pollMinutes", 30), 10) || 30)
 
+  // ------------------------------------------------------------- dark map
+  //
+  // CBMT is a bright paper map, so on a dark desktop the panel used to open
+  // with a flash of white. "auto" follows the desktop; "on"/"off" pin it.
+  readonly property string darkMapMode: {
+    var mode = String(setting("darkMap", "auto")).toLowerCase()
+    return mode === "on" || mode === "off" ? mode : "auto"
+  }
+
+  // Qt reads the colour scheme from the platform theme (gtk3 here), which is
+  // exactly what omarchy's theme switch writes with `gsettings set
+  // org.gnome.desktop.interface color-scheme`, so this updates live. Only if
+  // no platform theme answers do we fall back to the luminance of the shell
+  // theme's background, using omarchy-theme-color's own >382 rule.
+  readonly property bool darkTheme: {
+    var scheme = Application.styleHints.colorScheme
+    if (scheme === Qt.Dark) return true
+    if (scheme === Qt.Light) return false
+    return (Color.background.r + Color.background.g + Color.background.b) * 255 <= 382
+  }
+
+  readonly property bool darkMapActive: darkMapMode === "on" || (darkMapMode === "auto" && darkTheme)
+
+  // Drives the shader's mix factor, so switching themes cross-fades between
+  // the paper map and the dark one instead of snapping.
+  property real darkAmount: darkMapActive ? 1 : 0
+  Behavior on darkAmount {
+    NumberAnimation { duration: 250; easing.type: Easing.InOutQuad }
+  }
+
   // WMS 1.3.0 + EPSG:4326 orders the bbox lat,lon: minLat,minLon,maxLat,maxLon.
   readonly property real latSpan: spanKm / 111.0
   readonly property real lonSpan: spanKm / (111.0 * Math.max(0.05, Math.cos(latitude * Math.PI / 180)))
@@ -332,7 +362,21 @@ Panel {
               source: root.basemapUrl
               // Knocked back so the radar returns stay the brightest thing on
               // the map without the roads and shorelines becoming unreadable.
-              opacity: 0.82
+              // The dark version needs a little more knock-back still.
+              opacity: 0.82 - 0.12 * root.darkAmount
+
+              // invert + hue-rotate(180deg), the CSS "dark map" recipe: a
+              // plain invert would leave the lakes brown. Only the basemap is
+              // layered — the radar frames above it keep their real colours —
+              // and in light mode the layer stays off entirely, so nothing
+              // about the old render path changes.
+              layer.enabled: root.darkAmount > 0
+              layer.smooth: true
+              layer.effect: ShaderEffect {
+                property var source: null
+                property real amount: root.darkAmount
+                fragmentShader: Qt.resolvedUrl("shaders/darkmap.frag.qsb")
+              }
             }
 
             Repeater {
