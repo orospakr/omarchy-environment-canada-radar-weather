@@ -2,26 +2,21 @@
   "schemaVersion": 1,
   "id": "andrew.radar",
   "name": "Radar",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "andrew",
-  "description": "Animated Environment Canada weather radar loop",
-  "kinds": [
-    "bar-widget"
-  ],
-  "entryPoints": {
-    "barWidget": "BarWidget.qml"
-  },
+  "description": "Animated Environment Canada weather radar loop with multi-location tabs",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "BarWidget.qml" },
   "barWidget": {
     "displayName": "Radar",
-    "description": "Animated Environment Canada weather radar loop",
+    "description": "Animated Environment Canada weather radar loop with multi-location tabs",
     "category": "Info",
     "allowMultiple": false,
     "defaultSection": "center",
     "defaults": {
-      "latitude": 43.65,
-      "longitude": -79.38,
+      "locations": [],
+      "active": "auto",
       "spanKm": 280,
-      "locationName": "Toronto",
       "frames": 12,
       "frameMs": 250,
       "holdMs": 1000,
@@ -29,10 +24,9 @@
       "darkMap": "auto"
     },
     "schema": [
-      { "key": "latitude", "type": "number", "label": "Latitude" },
-      { "key": "longitude", "type": "number", "label": "Longitude" },
+      { "key": "locations", "type": "array", "label": "Saved cities (managed from the panel)" },
+      { "key": "active", "type": "string", "label": "Active tab (\"auto\" or a siteCode)" },
       { "key": "spanKm", "type": "number", "label": "Map span (km)" },
-      { "key": "locationName", "type": "string", "label": "Location name" },
       { "key": "frames", "type": "number", "label": "Frames in loop" },
       { "key": "frameMs", "type": "number", "label": "Frame duration (ms)" },
       { "key": "holdMs", "type": "number", "label": "Newest-frame hold (ms)" },

@@ -1,8 +1,10 @@
 import QtQuick
+import QtQuick.Controls as QQC
 import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "Model.js" as Model
 
 // Animated Environment and Climate Change Canada radar loop.
 //
@@ -11,6 +13,10 @@ import qs.Ui
 // stack of RADAR_1KM_RRAI rain-rate frames on top. Only the active frame is
 // opaque — switching opacity on already-decoded images is what keeps the
 // loop from flickering, which swapping a single Image's `source` would not.
+//
+// Locations are tabs: "Auto" resolves through BeaconDB's geoip fallback
+// (a ~25 km fix — plenty to pick a radar view), and manual cities come
+// from Environment Canada's citypage site list via the "+" picker.
 Panel {
   id: root
   moduleName: "andrew.radar"
@@ -70,18 +76,266 @@ Panel {
   readonly property color dim: Qt.darker(foreground, 1.5)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
+  // ---------------------------------------------------------- persistence
+  //
+  // Settings live inline on this widget's shell.json layout entry. Apply
+  // locally first so the UI answers the click, mirror into the bar widget's
+  // copy so it never writes a stale entry back, then persist through the
+  // shell (which is a no-op if the widget has no writable entry).
+  function persistSettings(values, removeKeys) {
+    var entry = { id: root.moduleName }
+    for (var existing in root.settings) if (existing !== "id") entry[existing] = root.settings[existing]
+    for (var key in values) entry[key] = values[key]
+    if (removeKeys) for (var i = 0; i < removeKeys.length; i++) delete entry[removeKeys[i]]
+
+    root.settings = entry
+    if (root.hostWidget && "settings" in root.hostWidget) root.hostWidget.settings = entry
+    if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
+      root.bar.shell.updateEntryInline(root.moduleName, entry)
+    else
+      // Session-only fallback: without the shell handle the entry cannot
+      // be written, and the change would vanish on the next reload. Say
+      // so in the journal instead of losing data silently.
+      console.warn("andrew.radar: settings NOT persisted (no bar.shell handle); keys:", Object.keys(entry).join(","))
+  }
+
   // ------------------------------------------------------------- location
   //
-  // Extra keys on this widget's shell.json layout entry override the
-  // Toronto defaults, e.g. { "id": "andrew.radar", "latitude": 49.28, ... }.
-  readonly property real latitude: Number(setting("latitude", 43.65))
-  readonly property real longitude: Number(setting("longitude", -79.38))
-  readonly property string locationName: String(setting("locationName", "Toronto"))
+  // "active" is either "auto" (BeaconDB geoip fix) or the siteCode of one
+  // of the configured cities in "locations". An unknown code — a city that
+  // was removed out from under it — falls back to auto.
+  // Injected settings arrive as Qt containers after a shell restart (a
+  // QVariantList is array-like but fails Array.isArray), while in-session
+  // persists hand back real JS arrays. Copy either shape into a JS array so
+  // the rest of the panel never sees the difference.
+  readonly property var locations: {
+    var v = setting("locations", [])
+    if (Array.isArray(v)) return v
+    var out = []
+    if (v && typeof v === "object" && isFinite(Number(v.length)))
+      for (var i = 0; i < v.length; i++) out.push(v[i])
+    return out
+  }
+  readonly property string active: String(setting("active", "auto"))
+  readonly property var autoFix: setting("autoFix", null)
+  readonly property bool hasFix: !!(autoFix
+    && isFinite(Number(autoFix.latitude)) && isFinite(Number(autoFix.longitude)))
+
+  readonly property var activeCity: {
+    for (var i = 0; i < locations.length; i++)
+      if (String(locations[i].siteCode) === active) return locations[i]
+    return null
+  }
+  readonly property bool autoActive: activeCity === null
+  readonly property bool hasLocation: !autoActive || hasFix
+
+  // The fallback coordinates only keep the bbox math finite while the map
+  // is hidden behind the "Locating…" empty state; they are never shown.
+  readonly property real latitude: autoActive
+    ? (hasFix ? Number(autoFix.latitude) : 43.65)
+    : Number(activeCity.latitude)
+  readonly property real longitude: autoActive
+    ? (hasFix ? Number(autoFix.longitude) : -79.38)
+    : Number(activeCity.longitude)
+
+  readonly property var addedCodes: {
+    var m = {}
+    for (var i = 0; i < locations.length; i++) m[String(locations[i].siteCode)] = true
+    return m
+  }
+
+  readonly property string autoName: {
+    if (!hasFix || sites.length === 0) return "Auto"
+    var near = Model.nearestSite(sites, Number(autoFix.latitude), Number(autoFix.longitude))
+    return near ? near.name : "Auto"
+  }
+  readonly property string activeName: autoActive ? autoName : String(activeCity.name)
+
+  function cityEntry(site) {
+    return {
+      siteCode: String(site.siteCode),
+      name: String(site.name),
+      province: String(site.province || ""),
+      latitude: Number(site.latitude),
+      longitude: Number(site.longitude)
+    }
+  }
+
+  function switchActive(value) {
+    if (String(value) === active) return
+    persistSettings({ active: String(value) })
+    if (String(value) === "auto") requestAutoFix()
+  }
+
+  function chooseCity(site) {
+    if (addedCodes[String(site.siteCode)])
+      switchActive(site.siteCode)
+    else
+      persistSettings({ locations: locations.concat([cityEntry(site)]), active: String(site.siteCode) })
+  }
+
+  function toggleCity(site) {
+    if (addedCodes[String(site.siteCode)]) removeCity(site.siteCode)
+    else persistSettings({ locations: locations.concat([cityEntry(site)]) })
+  }
+
+  // Reorder from a chip drag. Indices are into tabOptions (0 = Auto, last
+  // = "+"); `to` means "insert before that option", counted pre-removal.
+  function moveCity(fromOption, toOption) {
+    var from = fromOption - 1
+    var to = toOption - 1
+    if (to > from) to--
+    if (from < 0 || from >= locations.length || to < 0 || to === from) return
+    var next = locations.slice()
+    var moved = next.splice(from, 1)[0]
+    next.splice(to, 0, moved)
+    persistSettings({ locations: next })
+  }
+
+  function removeCity(code) {
+    var next = locations.filter(function(l) { return String(l.siteCode) !== String(code) })
+    var values = { locations: next }
+    if (active === String(code)) values.active = "auto"
+    persistSettings(values)
+    // Removing the active city lands the user on Auto; without a cached fix
+    // that would otherwise sit on "Locating…" until the next poll.
+    if (values.active) requestAutoFix()
+  }
+
+  // Pre-tabs entries wrote latitude/longitude/locationName directly on the
+  // shell.json entry. Fold such an entry into a single manual city so the
+  // configuration survives the upgrade. Runs on every settings injection
+  // but is self-disarming: the first persist writes "locations".
+  // Deferred: the first settings change fires mid-construction with empty
+  // settings and unsettled bindings (observed: autoActive evaluates false
+  // there). Qt.callLater coalesces that phantom with the real injection,
+  // so the kick runs once, after the entry — cached fix included — is
+  // actually visible.
+  onSettingsChanged: {
+    migrateLegacySettings()
+    Qt.callLater(root.kickAutoFix)
+  }
+  function migrateLegacySettings() {
+    var s = root.settings || {}
+    if (s.locations !== undefined) return
+    if (s.latitude === undefined && s.longitude === undefined) return
+    var lat = Number(s.latitude)
+    var lon = Number(s.longitude)
+    if (!isFinite(lat) || !isFinite(lon)) return
+    var name = s.locationName !== undefined ? String(s.locationName) : "Saved location"
+    persistSettings(
+      { locations: [{ siteCode: "legacy", name: name, province: "", latitude: lat, longitude: lon }], active: "legacy" },
+      ["latitude", "longitude", "locationName"])
+  }
+
   readonly property real spanKm: Math.max(40, Number(setting("spanKm", 280)))
   readonly property int frameCount: Math.max(2, Math.min(30, parseInt(setting("frames", 12), 10) || 12))
   readonly property int stepMs: Math.max(60, parseInt(setting("frameMs", 250), 10) || 250)
   readonly property int holdMs: Math.max(stepMs, parseInt(setting("holdMs", 1000), 10) || 1000)
   readonly property int pollMinutes: Math.max(1, parseInt(setting("pollMinutes", 30), 10) || 30)
+
+  // ------------------------------------------------------ geoip auto fix
+  //
+  // BeaconDB's fallback geolocate endpoint: an empty request body means
+  // "locate me by IP". Coarse (tens of km) but exactly the granularity a
+  // 280 km radar view needs, with no Geoclue dependency.
+  property bool autoFixFailed: false
+
+  function requestAutoFix() {
+    if (!settingsInjected) return
+    if (geolocateProc.running) return
+    if (hasFix && !autoFixFailed
+        && Date.now() - Number(autoFix.at || 0) < 3600000) return
+    geolocateProc.running = true
+  }
+
+  Process {
+    id: geolocateProc
+    command: ["curl", "-fsS", "--max-time", "6",
+      "-H", "content-type: application/json", "-d", "{}",
+      "https://api.beacondb.net/v1/geolocate"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var fix = Model.parseGeolocate(text)
+        if (!fix) {
+          // Keep any cached fix; the empty state only shows when there has
+          // never been one.
+          console.warn("andrew.radar: geolocate failed or returned no fix")
+          root.autoFixFailed = true
+          return
+        }
+        root.autoFixFailed = false
+        fix.at = Date.now()
+        root.persistSettings({ autoFix: fix })
+      }
+    }
+  }
+
+  // Startup warm-up, driven by the bar's settings injection rather than a
+  // timer: a timer that fires before injection cannot see a cached fix and
+  // refetches for nothing (observed: a 10-minute-old fix refetched at shell
+  // start). The bar always injects into a mounted widget, so this always
+  // runs exactly once, after the cache is visible.
+  property bool autoFixKicked: false
+  function kickAutoFix() {
+    if (autoFixKicked) return
+    autoFixKicked = true
+    if (autoActive) requestAutoFix()
+  }
+
+  // Belt-and-braces for the same construction-order hazard on the write
+  // side: never persist the geoip fix before the entry has been injected,
+  // since persistSettings snapshots root.settings and updateEntryInline
+  // replaces the whole entry — a pre-injection write would wipe the
+  // configured cities (the exact bug that ate them during development).
+  readonly property bool settingsInjected: autoFixKicked
+
+  // ------------------------------------------------------------ site list
+  //
+  // The Environment Canada citypage site list feeds both the "+" search
+  // popup and the naming of the auto fix. A snapshot ships with the plugin
+  // so search works offline; a cache in ~/.cache is refreshed monthly and
+  // preferred when it parses.
+  property var sites: []
+
+  readonly property string siteCacheDir: Quickshell.env("HOME") + "/.cache/omarchy/andrew.radar"
+  readonly property string bundledSitesPath: Qt.resolvedUrl("data/site_list_towns_en.csv").toString().replace(/^file:\/\//, "")
+
+  function applySites(text) {
+    var parsed = Model.parseSiteList(text)
+    if (parsed.length < 10) return false
+    sites = parsed
+    return true
+  }
+
+  FileView {
+    id: cachedSitesFile
+    path: root.siteCacheDir + "/site_list_towns_en.csv"
+    printErrors: false
+    onLoaded: if (!root.applySites(text())) bundledSitesFile.reload()
+    onLoadFailed: bundledSitesFile.reload()
+  }
+
+  FileView {
+    id: bundledSitesFile
+    path: root.bundledSitesPath
+    printErrors: false
+    // The cache wins when both load; only fill in if it hasn't.
+    onLoaded: if (root.sites.length === 0) root.applySites(text())
+  }
+
+  Process {
+    id: siteListRefreshProc
+    running: true
+    command: ["bash", "-c",
+      "d=\"$HOME/.cache/omarchy/andrew.radar\"; f=\"$d/site_list_towns_en.csv\"; mkdir -p \"$d\"; "
+      + "if [ -e \"$f\" ] && [ -n \"$(find \"$f\" -newermt '-30 days' 2>/dev/null)\" ]; then exit 0; fi; "
+      + "curl -fsS --max-time 15 -o \"$f.tmp\" https://dd.weather.gc.ca/today/citypage_weather/docs/site_list_towns_en.csv && mv \"$f.tmp\" \"$f\""]
+    onExited: function(exitCode) {
+      if (exitCode === 0) cachedSitesFile.reload()
+    }
+  }
 
   // ------------------------------------------------------------- dark map
   //
@@ -151,6 +405,26 @@ Panel {
   property bool fetchFailed: false
   property double lastUpdatedMs: 0
 
+  // Everything that changes which pixels a frame URL returns. The frame
+  // Repeater's model derives from this, so a location (or span) switch
+  // recreates every delegate — the per-delegate `counted` latch would
+  // otherwise never re-fire on a bare source change and the settled gate
+  // would count frames that are still reloading.
+  readonly property string locKey: hasLocation
+    ? latitude.toFixed(4) + "," + longitude.toFixed(4) + "," + spanKm
+    : ""
+  onLocKeyChanged: {
+    framesLoaded = 0
+    framesFailed = 0
+    frameIndex = 0
+  }
+
+  readonly property var frameModel: {
+    if (!hasLocation) return []
+    var key = locKey
+    return frameTimes.map(function(t) { return { time: t, key: key } })
+  }
+
   // Hold the loop until every frame has finished decoding. Advancing through
   // half-loaded frames would render the animation as a stutter of blanks.
   readonly property bool framesSettled: frameTimes.length > 0 && (framesLoaded + framesFailed) >= frameTimes.length
@@ -164,11 +438,24 @@ Panel {
   }
 
   readonly property string statusNote: {
+    if (!hasLocation) return autoFixFailed ? "Location unavailable — R retries" : "Locating…"
     if (frameTimes.length === 0) return fetchFailed ? "Radar unavailable" : "Loading radar…"
     if (!framesSettled) return "Loading frames " + (framesLoaded + framesFailed) + "/" + frameTimes.length
     if (fetchFailed) return "Offline — showing last loop"
     if (framesFailed > 0) return framesFailed + " frame(s) unavailable"
-    return locationName.toUpperCase() + " · " + frameTimes.length + " frames"
+    return (autoActive ? "AUTO · " : "") + activeName.toUpperCase() + " · " + frameTimes.length + " frames"
+  }
+
+  readonly property var tabOptions: {
+    var opts = [{ value: "auto", label: "Auto", tooltip: "Follow detected location" }]
+    for (var i = 0; i < locations.length; i++)
+      opts.push({
+        value: String(locations[i].siteCode),
+        label: String(locations[i].name),
+        tooltip: "Right-click to remove"
+      })
+    opts.push({ value: "+add", label: "+", tooltip: "Add city" })
+    return opts
   }
 
   function isoAt(ms) {
@@ -180,7 +467,8 @@ Panel {
 
   // GeoMet advertises the available radar window as
   // "<start>/<end>/PT6M" inside the layer's time Dimension. nearestValue is
-  // 0, so every TIME we ask for has to land exactly on that grid.
+  // 0, so every TIME we ask for has to land exactly on that grid. The time
+  // grid is global to the layer — location changes never require re-asking.
   function applyCapabilities(body) {
     var match = String(body || "").match(/<Dimension[^>]*name="time"[^>]*>([^<]*)<\/Dimension>/)
     if (!match) return false
@@ -215,6 +503,11 @@ Panel {
   }
 
   function refresh() {
+    // Only when the panel is actually open: the poll timer's triggeredOnStart
+    // refresh fires before the bar injects settings, and a geolocate started
+    // then couldn't see a cached fix. The startup warm-up is the injection-
+    // delayed Timer below; every user-driven refresh path has the panel open.
+    if (autoActive && opened) requestAutoFix()
     if (fetching) return
     fetching = true
 
@@ -245,6 +538,20 @@ Panel {
   function advance() {
     if (frameTimes.length === 0) return
     frameIndex = (frameIndex + 1) % frameTimes.length
+  }
+
+  function openRemoveMenu(value, chip) {
+    if (value === "auto" || value === "+add") return
+    var city = null
+    for (var i = 0; i < locations.length; i++)
+      if (String(locations[i].siteCode) === String(value)) city = locations[i]
+    if (!city) return
+    removeMenu.targetCode = String(value)
+    removeMenu.targetName = String(city.name)
+    removeMenu.parent = chip || tabsRow
+    removeMenu.x = 0
+    removeMenu.y = (chip ? chip.height : 0) + Style.spacing.xxs
+    removeMenu.open()
   }
 
   Timer {
@@ -297,6 +604,9 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // The picker and the remove menu own the keyboard while open; the
+      // search field in particular must see plain letters, not hotkeys.
+      blocked: cityPicker.opened || removeMenu.opened
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onActivateRequested: root.playing = !root.playing
@@ -305,8 +615,17 @@ Panel {
         root.playing = false
         root.frameIndex = (root.frameIndex + dx + root.frameTimes.length) % root.frameTimes.length
       }
+      onDeleteRequested: {
+        if (root.activeCity) root.openRemoveMenu(root.active, tabs.chipForValue(root.active))
+      }
       onTextKey: function(t) {
-        if (t === "r" || t === "R") root.refresh()
+        if (t === "r" || t === "R") { root.refresh(); return }
+        if (t === "a" || t === "A" || t === "+") { cityPicker.open(); return }
+        // 1 = Auto, 2… = the cities in tab order.
+        var n = parseInt(t, 10)
+        if (!isFinite(n) || n < 1) return
+        if (n === 1) root.switchActive("auto")
+        else if (n - 2 < root.locations.length) root.switchActive(root.locations[n - 2].siteCode)
       }
 
       Column {
@@ -336,6 +655,95 @@ Panel {
           foreground: root.foreground
         }
 
+        // ---- Location tabs: Auto, configured cities, "+" to add.
+        Item {
+          id: tabsRow
+          width: parent.width
+          implicitHeight: tabs.implicitHeight
+
+          RadarTabs {
+            id: tabs
+            width: parent.width
+            foreground: root.foreground
+            accent: Color.accent
+            fontFamily: root.fontFamily
+            options: root.tabOptions
+            value: root.autoActive ? "auto" : root.active
+            onChanged: function(value) {
+              if (value === "+add") cityPicker.open()
+              else root.switchActive(value)
+            }
+            onRightClicked: function(value, chip) { root.openRemoveMenu(value, chip) }
+            onReordered: function(from, to) { root.moveCity(from, to) }
+          }
+
+          CityPicker {
+            id: cityPicker
+            x: 0
+            y: tabs.height + Style.spacing.xxs
+            width: Math.min(tabsRow.width, Style.space(300))
+            height: Math.min(Style.space(340), keyCatcher.height - column.y - tabsRow.y - tabs.height - Style.space(16))
+            sites: root.sites
+            addedCodes: root.addedCodes
+            fontFamily: root.fontFamily
+            onChoose: function(site) { root.chooseCity(site) }
+            onToggleStar: function(site) { root.toggleCity(site) }
+          }
+
+          // Right-click context menu for a city chip. Reparented onto the
+          // chip it was invoked on so it drops down right underneath.
+          QQC.Popup {
+            id: removeMenu
+            property string targetCode: ""
+            property string targetName: ""
+
+            readonly property var borderSpec: Border.localOrSurfaceSpec("popups", "border", Color.popups.border, Color.popups.border, Style.normalBorderWidth)
+
+            padding: Style.spacing.hairline
+            leftPadding: Border.left(borderSpec) + Style.spacing.hairline
+            rightPadding: Border.right(borderSpec) + Style.spacing.hairline
+            topPadding: Border.top(borderSpec) + Style.spacing.hairline
+            bottomPadding: Border.bottom(borderSpec) + Style.spacing.hairline
+            // Opened from the keyboard (x/Delete) the catcher is blocked, so
+            // the menu itself must own Enter/Escape.
+            focus: true
+
+            // The menu is reparented onto whichever chip invoked it, and
+            // removing a city rebuilds the chip row — park it back on the
+            // stable row before the chip it sat on is destroyed.
+            onClosed: removeMenu.parent = tabsRow
+
+            background: BorderSurface {
+              color: Color.popups.background
+              borderSpec: removeMenu.borderSpec
+              radius: Style.cornerRadius
+            }
+
+            contentItem: Button {
+              focus: true
+              text: "Remove " + removeMenu.targetName
+              iconText: "✕"
+              foreground: Color.popups.text
+              accent: Color.accent
+              fontFamily: root.fontFamily
+              onClicked: {
+                removeMenu.close()
+                root.removeCity(removeMenu.targetCode)
+              }
+              Keys.onPressed: function(event) {
+                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                  removeMenu.close()
+                  root.removeCity(removeMenu.targetCode)
+                  event.accepted = true
+                } else if (event.key === Qt.Key_Escape) {
+                  removeMenu.close()
+                  event.accepted = true
+                }
+              }
+            }
+          }
+        }
+
         // ---- Map: base layer, preloaded radar frames, location marker.
         Rectangle {
           id: mapFrame
@@ -354,12 +762,13 @@ Panel {
             width: root.mapWidth
             height: root.mapHeight
             anchors.centerIn: parent
+            visible: root.hasLocation
 
             Image {
               id: basemap
               anchors.fill: parent
               asynchronous: true
-              source: root.basemapUrl
+              source: root.hasLocation ? root.basemapUrl : ""
               // Knocked back so the radar returns stay the brightest thing on
               // the map without the roads and shorelines becoming unreadable.
               // The dark version needs a little more knock-back still.
@@ -380,18 +789,19 @@ Panel {
             }
 
             Repeater {
-              model: root.frameTimes
+              model: root.frameModel
 
               Image {
                 required property int index
-                required property string modelData
+                required property var modelData
 
                 anchors.fill: parent
                 asynchronous: true
-                source: root.frameUrl(modelData)
+                source: root.frameUrl(modelData.time)
                 // Load-bearing: a rebuilt frame list re-creates every delegate,
                 // and Qt's pixmap cache is what keeps that to downloading only
-                // the genuinely new timestamps rather than the whole loop.
+                // the genuinely new timestamps — or, on a return to an
+                // already-viewed location, none at all.
                 cache: true
                 // Opacity, not source-swapping: every frame stays decoded in
                 // the scene graph so advancing costs nothing and never blanks.
@@ -409,7 +819,8 @@ Panel {
               }
             }
 
-            // Configured location, projected into the bbox.
+            // Active location, projected into the bbox. For auto this is the
+            // geoip fix — coarse, but honest about what is being centred on.
             Rectangle {
               id: marker
               width: Style.space(9)
@@ -431,9 +842,19 @@ Panel {
             }
           }
 
+          // Empty state for the Auto tab before any fix has ever arrived.
+          Text {
+            anchors.centerIn: parent
+            visible: !root.hasLocation
+            text: root.autoFixFailed ? "Location unavailable — press R to retry" : "Locating…"
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
           // Paused badge, so a stopped loop never looks like a stuck fetch.
           Rectangle {
-            visible: !root.playing && root.frameTimes.length > 0
+            visible: !root.playing && root.frameTimes.length > 0 && root.hasLocation
             anchors.top: parent.top
             anchors.right: parent.right
             anchors.margins: Style.space(8)
@@ -482,9 +903,13 @@ Panel {
 
           Text {
             id: hint
+            anchors.left: attribution.right
+            anchors.leftMargin: Style.space(16)
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            text: root.playing ? "Click map to pause · R refresh" : "Click map to play · ←/→ step"
+            horizontalAlignment: Text.AlignRight
+            elide: Text.ElideRight
+            text: root.playing ? "R refresh · 1-9 tabs · A add" : "Click map to play · ←/→ step"
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
