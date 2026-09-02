@@ -9,7 +9,11 @@ Canada's own words, a scrolling 24-hour strip, and the week ahead. Location tabs
 (geoip-detected) plus any cities you add from Environment Canada's official
 site list.
 
-![Panel showing a severe-thunderstorm watch for Toronto: lightning bolts over the radar cores beside the forecast](docs/screenshot.png)
+![Panel on a dark theme during a severe-thunderstorm watch and warning for Toronto: lightning bolts over the radar cores beside the forecast](docs/screenshot-dark.png)
+
+The same panel on a light theme:
+
+![Panel on a light theme showing a severe-thunderstorm watch for Toronto with lightning over the radar](docs/screenshot.png)
 
 ## Features
 
