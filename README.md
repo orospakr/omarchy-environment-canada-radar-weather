@@ -164,8 +164,8 @@ The feed only publishes the last hour, six minutes short of the default
 12-frame loop. Ended bins never change, so the widget keeps them until they
 fall off the loop: after the first background refresh the whole loop has
 lightning, and only right after a shell start (or with a `frames` value
-well past an hour) do the oldest frames show none — the top-left chip on the
-map dims on those frames.
+well past an hour) do the oldest frames show none — the top-left LIGHTNING
+chip on the map disappears on those frames.
 
 The data comes from the same feed the weather.gc.ca map itself uses
 (Environment Canada's Canadian Lightning Detection Network, aggregated into

@@ -1161,10 +1161,12 @@ Panel {
               font.pixelSize: Style.font.body
             }
 
-            // Lightning state chip, top left of the map. Dimmed on frames
-            // older than the feed's one-hour window (nothing to draw there).
+            // Lightning state chip, top left of the map. Absent on frames
+            // with no strikes to draw (older than the feed's one-hour
+            // window); still shown while loading or when the feed is down.
             Rectangle {
               visible: root.hasLocation && root.lightningChip !== ""
+                && (root.currentLightning !== null || root.lightningDown || root.lightningFetching)
               anchors.top: parent.top
               anchors.left: parent.left
               anchors.margins: Style.space(8)
@@ -1172,7 +1174,6 @@ Panel {
               height: lightningChipLabel.implicitHeight + Style.space(6)
               radius: Style.cornerRadius
               color: root.chipFill
-              opacity: root.currentLightning !== null || root.lightningDown || root.lightningFetching ? 1 : 0.5
 
               Text {
                 id: lightningChipLabel
