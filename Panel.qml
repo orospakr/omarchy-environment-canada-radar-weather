@@ -542,11 +542,18 @@ Panel {
 
   readonly property string statusNote: {
     if (!hasLocation) return autoFixFailed ? "Location unavailable — R retries" : "Locating…"
-    if (frameTimes.length === 0) return fetchFailed ? "Radar unavailable" : "Loading radar…"
-    if (!framesSettled) return "Loading frames " + (framesLoaded + framesFailed) + "/" + frameTimes.length
-    if (fetchFailed) return "Offline — showing last loop"
-    if (framesFailed > 0) return framesFailed + " frame(s) unavailable"
-    return (autoActive ? "AUTO · " : "") + activeName.toUpperCase() + " · " + frameTimes.length + " frames"
+    var name = (autoActive ? "AUTO · " : "") + activeName.toUpperCase()
+    if (frameTimes.length === 0) return name + (fetchFailed ? " · Radar unavailable" : " · Loading radar…")
+    if (fetchFailed) return name + " · Offline — showing last loop"
+    if (framesFailed > 0) return name + " · " + framesFailed + " frame(s) unavailable"
+    return name
+  }
+
+  // Frame count / loading progress, shown as a chip on the map itself.
+  readonly property string framesChip: {
+    if (frameTimes.length === 0) return ""
+    if (!framesSettled) return "LOADING " + (framesLoaded + framesFailed) + "/" + frameTimes.length
+    return frameTimes.length + " FRAMES"
   }
 
   readonly property var tabOptions: {
@@ -741,9 +748,8 @@ Panel {
 
         PanelHero {
           width: parent.width
-          title: "Radar & Weather"
+          title: "Environment Canada Radar & Weather"
           meta: root.statusNote
-          detail: root.frameLabel
           foreground: root.foreground
           fontFamily: root.fontFamily
 
@@ -977,6 +983,52 @@ Panel {
                 id: pausedLabel
                 anchors.centerIn: parent
                 text: "PAUSED"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1.2
+              }
+            }
+
+            // Frame-count chip, bottom left of the map.
+            Rectangle {
+              visible: root.hasLocation && root.framesChip !== ""
+              anchors.bottom: parent.bottom
+              anchors.left: parent.left
+              anchors.margins: Style.space(8)
+              width: framesChipLabel.implicitWidth + Style.space(12)
+              height: framesChipLabel.implicitHeight + Style.space(6)
+              radius: Style.cornerRadius
+              color: Qt.rgba(0, 0, 0, 0.55)
+
+              Text {
+                id: framesChipLabel
+                anchors.centerIn: parent
+                text: root.framesChip
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1.2
+              }
+            }
+
+            // Timestamp of the frame on screen, bottom right of the map.
+            Rectangle {
+              visible: root.hasLocation && root.frameLabel !== ""
+              anchors.bottom: parent.bottom
+              anchors.right: parent.right
+              anchors.margins: Style.space(8)
+              width: frameLabelChip.implicitWidth + Style.space(12)
+              height: frameLabelChip.implicitHeight + Style.space(6)
+              radius: Style.cornerRadius
+              color: Qt.rgba(0, 0, 0, 0.55)
+
+              Text {
+                id: frameLabelChip
+                anchors.centerIn: parent
+                text: root.frameLabel
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
