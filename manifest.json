@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "ca.orospakr.ec-radar-weather",
   "name": "Environment Canada Radar & Weather",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "author": "andrew",
-  "description": "Environment Canada weather: animated radar loop, current conditions, hourly and 7-day forecasts, multi-location tabs",
+  "description": "Environment Canada weather: animated radar loop, lightning strikes, current conditions, hourly and 7-day forecasts, multi-location tabs",
   "kinds": [
     "bar-widget"
   ],
@@ -13,7 +13,7 @@
   },
   "barWidget": {
     "displayName": "EC Radar & Weather",
-    "description": "Environment Canada weather: animated radar loop, current conditions, hourly and 7-day forecasts, multi-location tabs",
+    "description": "Environment Canada weather: animated radar loop, lightning strikes, current conditions, hourly and 7-day forecasts, multi-location tabs",
     "category": "Info",
     "allowMultiple": false,
     "defaultSection": "center",

@@ -2,14 +2,14 @@
 
 An [Omarchy](https://omarchy.org/) shell bar widget for Environment and
 Climate Change Canada's weather services. A 󰐷 pill sits in the status bar;
-clicking it opens a panel with an animated precipitation-radar loop on the
-left and the full citypage weather feed on the right — current conditions,
-the next forecast period in Environment Canada's own words, a scrolling
-24-hour strip, and the week ahead. Location tabs along the top: **Auto**
+clicking it opens a panel with an animated precipitation-radar loop, with
+lightning strikes overlaid, on the left and the full citypage weather feed
+on the right — current conditions, the next forecast period in Environment
+Canada's own words, a scrolling 24-hour strip, and the week ahead. Location tabs along the top: **Auto**
 (geoip-detected) plus any cities you add from Environment Canada's official
 site list.
 
-![Panel showing radar for the Greater Toronto Area beside the Toronto forecast](docs/screenshot.png)
+![Panel showing a severe-thunderstorm watch for Toronto: lightning bolts over the radar cores beside the forecast](docs/screenshot.png)
 
 ## Features
 
@@ -34,6 +34,9 @@ site list.
   6-minute cadence (~72 minutes of history), with a hold on the newest
   frame before the loop rewinds, over NRCan's CBMT basemap with a marker at
   the active location.
+- **Lightning overlay** — strikes from the last hour drawn as bolt glyphs on
+  the radar map, one set per frame, so lightning moves with the rain. Bolt
+  size shows how many strikes clustered at that spot.
 - **Always warm** — radar frames and the forecast prefetch at shell startup
   and refresh in the background, so the panel opens instantly. Forecasts
   are cached per city, so switching tabs is instant and free.
@@ -144,15 +147,48 @@ no platform theme answers, the widget falls back to the luminance of the
 shell theme's background colour, using the same `R+G+B > 382` rule as
 `omarchy-theme-color`.
 
+### Lightning overlay
+
+Strikes are drawn as lightning-bolt glyphs on the radar map, one set per
+radar frame: each frame shows the strikes detected in the 6 minutes ending
+at that frame's timestamp, so the loop shows lightning moving with the
+rain. Bolt size encodes how many strikes were clustered at that spot,
+matching the legend on weather.gc.ca:
+
+- small — 1–5 strikes
+- medium — 6–25
+- large — 26–100
+- largest — 101+
+
+The feed only publishes the last hour, six minutes short of the default
+12-frame loop. Ended bins never change, so the widget keeps them until they
+fall off the loop: after the first background refresh the whole loop has
+lightning, and only right after a shell start (or with a `frames` value
+well past an hour) do the oldest frames show none — the top-left chip on the
+map dims on those frames.
+
+The data comes from the same feed the weather.gc.ca map itself uses
+(Environment Canada's Canadian Lightning Detection Network, aggregated into
+6-minute bins). That feed is not part of the documented MSC open-data
+services, so it may change without notice; if it does, the overlay marks
+itself unavailable and the radar loop is unaffected. Single strikes are
+positioned to about a kilometre; clusters are drawn at their centroid. No
+per-strike details (polarity, cloud-to-ground vs intra-cloud) are
+published. The documented alternative, the GeoMet `Lightning_2.5km_Density`
+WMS layer, is a 10-minute flash-density raster and is not used.
+
 ## How it works
 
-Four services, no API keys:
+Five services, no API keys:
 
 - **Radar**: [MSC GeoMet](https://eccc-msc.github.io/open-data/msc-geomet/readme_en/)
   layer `RADAR_1KM_RRAI` (1 km rain-rate composite). The available time
   window is discovered from `GetCapabilities` — it is global to the layer,
   so switching tabs never re-asks — then one transparent PNG is fetched
   per 6-minute timestamp for the active bbox.
+- **Lightning**: the weather.gc.ca map's own 6-minute strike feed (see
+  [Lightning overlay](#lightning-overlay) above for its caveats), drawn as
+  glyphs positioned in the same bbox as the radar frames.
 - **Forecasts**: the [MSC Datamart citypage feed](https://dd.weather.gc.ca/today/citypage_weather/).
   Files land in per-UTC-hour directories (`{PROV}/{HH}/…_MSC_CitypageWeather_{site}_en.xml`)
   with no "latest" alias and no `/yesterday` root, so the widget probes

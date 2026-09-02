@@ -6,6 +6,7 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 import "Weather.js" as Weather
+import "Lightning.js" as Lightning
 
 // Animated Environment and Climate Change Canada radar loop.
 //
@@ -18,6 +19,10 @@ import "Weather.js" as Weather
 // Locations are tabs: "Auto" resolves through BeaconDB's geoip fallback
 // (a ~25 km fix — plenty to pick a radar view), and manual cities come
 // from Environment Canada's citypage site list via the "+" picker.
+//
+// Lightning strikes ride on top of the loop as bolt glyphs, from the same
+// 6-minute feed weather.gc.ca's own map draws — best-effort, never gating
+// the radar.
 //
 // Beside the radar sits the citypage weather feed for the same location:
 // current conditions, the next period's forecast text, an hourly strip,
@@ -540,13 +545,68 @@ Panel {
     return Qt.formatDateTime(d, "HH:mm")
   }
 
+  // ------------------------------------------------------------ lightning
+  //
+  // weather.gc.ca's map feed: national strike points in 6-minute bins whose
+  // end times land exactly on the radar frame timestamps, so a frame shows
+  // the strikes from the six minutes leading up to it. Only the last hour is
+  // published, and the feed is the site's own internal API rather than a
+  // documented open-data product, so everything here is best-effort: it
+  // never gates the radar loop, and it marks itself unavailable rather than
+  // guessing.
+  property var lightningBins: ({})   // frame ISO time -> [{lon, lat, n}]
+  property int lightningRev: 0       // bumped after every bins mutation
+  property string lightningLatestIso: ""
+  // The newest bin is served live and partial until the next one appears,
+  // so the copy cached while it was newest gets refetched once it is final.
+  property string lightningPartialIso: ""
+  property bool lightningFetching: false
+  property bool lightningFailed: false
+  property bool lightningStale: false
+
+  // The feed clusters strikes server-side; the distance follows the map span
+  // the same way the site follows zoom. Part of the cache identity.
+  readonly property real clusterDistance: Lightning.clusterDistanceFor(spanKm)
+  // Bumped when the cache identity changes so callbacks from an in-flight
+  // batch at the old distance are dropped instead of repopulating it.
+  property int lightningGen: 0
+  onClusterDistanceChanged: {
+    lightningGen++
+    lightningBins = ({})
+    lightningPartialIso = ""
+    lightningRev++
+    lightningFetching = false
+    refreshLightning()
+  }
+
+  readonly property var currentLightning: {
+    var rev = lightningRev // dependency: bins are mutated in place
+    if (currentFrameTime === "") return null
+    var pts = lightningBins[currentFrameTime]
+    return pts ? pts : null
+  }
+  readonly property bool lightningDown: lightningFailed || lightningStale
+
+  readonly property string lightningChip: {
+    if (lightningDown) return "󱐋 UNAVAILABLE"
+    if (lightningRev === 0 && lightningFetching) return "󱐋 LOADING"
+    return "󱐋 LIGHTNING"
+  }
+
+  // Map chips sit on a fixed dark translucent fill whatever the theme, so
+  // their text is fixed light too — the theme foreground is dark in light
+  // mode and vanished into the chip.
+  readonly property color chipFill: Qt.rgba(0, 0, 0, 0.55)
+  readonly property color chipText: "#f2f2f2"
+
   readonly property string statusNote: {
     if (!hasLocation) return autoFixFailed ? "Location unavailable — R retries" : "Locating…"
     var name = (autoActive ? "AUTO · " : "") + activeName.toUpperCase()
     if (frameTimes.length === 0) return name + (fetchFailed ? " · Radar unavailable" : " · Loading radar…")
     if (fetchFailed) return name + " · Offline — showing last loop"
-    if (framesFailed > 0) return name + " · " + framesFailed + " frame(s) unavailable"
-    return name
+    var note = lightningDown ? " · Lightning unavailable" : ""
+    if (framesFailed > 0) return name + " · " + framesFailed + " frame(s) unavailable" + note
+    return name + note
   }
 
   // Frame count / loading progress, shown as a chip on the map itself.
@@ -621,6 +681,7 @@ Panel {
     // delayed Timer below; every user-driven refresh path has the panel open.
     if (autoActive && opened) requestAutoFix()
     requestWeather(force === true)
+    refreshLightning()
     if (fetching) return
     fetching = true
 
@@ -641,6 +702,83 @@ Panel {
     }
     xhr.open("GET", "https://geo.weather.gc.ca/geomet?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layer=RADAR_1KM_RRAI")
     xhr.send()
+  }
+
+  // Bin list first, then only the bins we lack. Ended bins are immutable,
+  // so they stay cached until they fall off the radar loop — the feed only
+  // lists the last hour, six minutes short of a 12-frame loop, but after
+  // the first background poll the cache covers all of it. The newest bin
+  // is a live partial that regenerates every minute, so it is always
+  // refetched, and once more after it stops being newest.
+  function refreshLightning() {
+    if (lightningFetching) return
+    lightningFetching = true
+    var gen = lightningGen
+
+    var xhr = new XMLHttpRequest()
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== XMLHttpRequest.DONE) return
+      if (gen !== root.lightningGen) return
+      var bins = xhr.status === 200 ? Lightning.parseMetadata(xhr.responseText) : []
+      if (bins.length === 0) {
+        root.lightningFetching = false
+        root.lightningFailed = true
+        return
+      }
+      var latest = Lightning.binToIso(bins[bins.length - 1])
+      root.lightningLatestIso = latest || ""
+      root.lightningStale = Lightning.isStale(latest, Date.now())
+
+      var wanted = []
+      for (var i = 0; i < bins.length; i++) {
+        var iso = Lightning.binToIso(bins[i])
+        if (!iso) continue
+        if (i === bins.length - 1 || iso === root.lightningPartialIso || !(iso in root.lightningBins))
+          wanted.push(bins[i])
+      }
+      root.lightningPartialIso = latest || ""
+      root.fetchLightningBins(wanted, bins, gen)
+    }
+    xhr.open("GET", Lightning.METADATA_URL)
+    xhr.send()
+  }
+
+  function fetchLightningBins(wanted, listed, gen) {
+    var cd = clusterDistance
+    var keep = {}
+    for (var i = 0; i < listed.length; i++) {
+      var k = Lightning.binToIso(listed[i])
+      if (k) keep[k] = true
+    }
+    var pending = wanted.length
+    var failed = 0
+
+    function finish() {
+      var next = {}
+      var oldest = root.frameTimes.length > 0 ? root.frameTimes[0] : ""
+      for (var key in root.lightningBins)
+        if (keep[key] || key >= oldest) next[key] = root.lightningBins[key]
+      root.lightningBins = next
+      root.lightningRev++
+      root.lightningFetching = false
+      // Partial success still draws what arrived; only a total miss is "down".
+      root.lightningFailed = wanted.length > 0 && failed === wanted.length
+    }
+
+    if (pending === 0) { finish(); return }
+    wanted.forEach(function(bin) {
+      var iso = Lightning.binToIso(bin)
+      var xhr = new XMLHttpRequest()
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState !== XMLHttpRequest.DONE) return
+        if (gen !== root.lightningGen) return
+        if (xhr.status === 200) root.lightningBins[iso] = Lightning.parseBin(xhr.responseText).points
+        else failed++
+        if (--pending === 0) finish()
+      }
+      xhr.open("GET", Lightning.binUrl(bin, cd))
+      xhr.send()
+    })
   }
 
   function noteFrameSettled(status) {
@@ -935,6 +1073,61 @@ Panel {
                 }
               }
 
+              // Strikes for the frame on screen, as bolt glyphs sized by
+              // cluster count. One Canvas repainted per frame step: a few
+              // hundred small paths cost a few ms, far cheaper than a delegate
+              // per strike, and nothing here holds up the loop.
+              Canvas {
+                id: lightningCanvas
+                anchors.fill: parent
+                visible: root.currentLightning !== null
+                property var points: root.currentLightning
+                onPointsChanged: requestPaint()
+                onWidthChanged: requestPaint()
+                onHeightChanged: requestPaint()
+                Connections {
+                  target: root
+                  function onLocKeyChanged() { lightningCanvas.requestPaint() }
+                }
+
+                onPaint: {
+                  var ctx = getContext("2d")
+                  ctx.clearRect(0, 0, width, height)
+                  var pts = points
+                  if (!pts || width <= 0 || height <= 0) return
+                  var shown = Lightning.pointsInBox(pts, root.minLat, root.maxLat, root.minLon, root.maxLon)
+                  // Big clusters first so single strikes stay visible on top.
+                  shown.sort(function(a, b) { return b.n - a.n })
+
+                  var bolt = Lightning.BOLT
+                  var lonSpan = root.maxLon - root.minLon
+                  var latSpan = root.maxLat - root.minLat
+                  ctx.lineWidth = Math.max(1, Style.space(1))
+                  ctx.lineJoin = "round"
+                  // A soft outline: hard black edges on hundreds of packed
+                  // glyphs turn a storm core into a smear that hides the rain.
+                  ctx.strokeStyle = "rgba(0, 0, 0, 0.5)"
+                  ctx.fillStyle = "#ffe14d"
+                  for (var i = 0; i < shown.length; i++) {
+                    var p = shown[i]
+                    var h = Style.space(Lightning.sizeFor(Lightning.bucket(p.n)))
+                    var w = h * 0.65
+                    var cx = (p.lon - root.minLon) / lonSpan * width
+                    var cy = (root.maxLat - p.lat) / latSpan * height
+                    ctx.beginPath()
+                    for (var j = 0; j < bolt.length; j++) {
+                      var x = cx - w / 2 + bolt[j][0] * w
+                      var y = cy - h / 2 + bolt[j][1] * h
+                      if (j === 0) ctx.moveTo(x, y)
+                      else ctx.lineTo(x, y)
+                    }
+                    ctx.closePath()
+                    ctx.fill()
+                    ctx.stroke()
+                  }
+                }
+              }
+
               // Active location, projected into the bbox. For auto this is the
               // geoip fix — coarse, but honest about what is being centred on.
               Rectangle {
@@ -968,6 +1161,31 @@ Panel {
               font.pixelSize: Style.font.body
             }
 
+            // Lightning state chip, top left of the map. Dimmed on frames
+            // older than the feed's one-hour window (nothing to draw there).
+            Rectangle {
+              visible: root.hasLocation && root.lightningChip !== ""
+              anchors.top: parent.top
+              anchors.left: parent.left
+              anchors.margins: Style.space(8)
+              width: lightningChipLabel.implicitWidth + Style.space(12)
+              height: lightningChipLabel.implicitHeight + Style.space(6)
+              radius: Style.cornerRadius
+              color: root.chipFill
+              opacity: root.currentLightning !== null || root.lightningDown || root.lightningFetching ? 1 : 0.5
+
+              Text {
+                id: lightningChipLabel
+                anchors.centerIn: parent
+                text: root.lightningChip
+                color: root.chipText
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1.2
+              }
+            }
+
             // Paused badge, so a stopped loop never looks like a stuck fetch.
             Rectangle {
               visible: !root.playing && root.frameTimes.length > 0 && root.hasLocation
@@ -977,13 +1195,13 @@ Panel {
               width: pausedLabel.implicitWidth + Style.space(12)
               height: pausedLabel.implicitHeight + Style.space(6)
               radius: Style.cornerRadius
-              color: Qt.rgba(0, 0, 0, 0.55)
+              color: root.chipFill
 
               Text {
                 id: pausedLabel
                 anchors.centerIn: parent
                 text: "PAUSED"
-                color: root.foreground
+                color: root.chipText
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
@@ -1000,13 +1218,13 @@ Panel {
               width: framesChipLabel.implicitWidth + Style.space(12)
               height: framesChipLabel.implicitHeight + Style.space(6)
               radius: Style.cornerRadius
-              color: Qt.rgba(0, 0, 0, 0.55)
+              color: root.chipFill
 
               Text {
                 id: framesChipLabel
                 anchors.centerIn: parent
                 text: root.framesChip
-                color: root.foreground
+                color: root.chipText
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
@@ -1023,13 +1241,13 @@ Panel {
               width: frameLabelChip.implicitWidth + Style.space(12)
               height: frameLabelChip.implicitHeight + Style.space(6)
               radius: Style.cornerRadius
-              color: Qt.rgba(0, 0, 0, 0.55)
+              color: root.chipFill
 
               Text {
                 id: frameLabelChip
                 anchors.centerIn: parent
                 text: root.frameLabel
-                color: root.foreground
+                color: root.chipText
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
