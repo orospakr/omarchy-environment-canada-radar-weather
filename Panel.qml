@@ -5,6 +5,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
+import "Weather.js" as Weather
 
 // Animated Environment and Climate Change Canada radar loop.
 //
@@ -17,10 +18,14 @@ import "Model.js" as Model
 // Locations are tabs: "Auto" resolves through BeaconDB's geoip fallback
 // (a ~25 km fix — plenty to pick a radar view), and manual cities come
 // from Environment Canada's citypage site list via the "+" picker.
+//
+// Beside the radar sits the citypage weather feed for the same location:
+// current conditions, the next period's forecast text, an hourly strip,
+// and the week ahead (hover a day for its full text).
 Panel {
   id: root
-  moduleName: "andrew.radar"
-  ipcTarget: "andrew.radar"
+  moduleName: "ca.orospakr.ec-radar-weather"
+  ipcTarget: "ca.orospakr.ec-radar-weather"
   manageIpc: false
 
   property var anchorItem: null
@@ -96,7 +101,7 @@ Panel {
       // Session-only fallback: without the shell handle the entry cannot
       // be written, and the change would vanish on the next reload. Say
       // so in the journal instead of losing data silently.
-      console.warn("andrew.radar: settings NOT persisted (no bar.shell handle); keys:", Object.keys(entry).join(","))
+      console.warn("ca.orospakr.ec-radar-weather: settings NOT persisted (no bar.shell handle); keys:", Object.keys(entry).join(","))
   }
 
   // ------------------------------------------------------------- location
@@ -144,11 +149,11 @@ Panel {
     return m
   }
 
-  readonly property string autoName: {
-    if (!hasFix || sites.length === 0) return "Auto"
-    var near = Model.nearestSite(sites, Number(autoFix.latitude), Number(autoFix.longitude))
-    return near ? near.name : "Auto"
-  }
+  // Nearest citypage site to the geoip fix: names the Auto tab and serves
+  // as the weather source while Auto is active.
+  readonly property var autoSite: (!hasFix || sites.length === 0) ? null
+    : Model.nearestSite(sites, Number(autoFix.latitude), Number(autoFix.longitude))
+  readonly property string autoName: autoSite ? autoSite.name : "Auto"
   readonly property string activeName: autoActive ? autoName : String(activeCity.name)
 
   function cityEntry(site) {
@@ -261,7 +266,7 @@ Panel {
         if (!fix) {
           // Keep any cached fix; the empty state only shows when there has
           // never been one.
-          console.warn("andrew.radar: geolocate failed or returned no fix")
+          console.warn("ca.orospakr.ec-radar-weather: geolocate failed or returned no fix")
           root.autoFixFailed = true
           return
         }
@@ -282,6 +287,7 @@ Panel {
     if (autoFixKicked) return
     autoFixKicked = true
     if (autoActive) requestAutoFix()
+    requestWeather(false)
   }
 
   // Belt-and-braces for the same construction-order hazard on the write
@@ -299,7 +305,7 @@ Panel {
   // preferred when it parses.
   property var sites: []
 
-  readonly property string siteCacheDir: Quickshell.env("HOME") + "/.cache/omarchy/andrew.radar"
+  readonly property string siteCacheDir: Quickshell.env("HOME") + "/.cache/omarchy/ca.orospakr.ec-radar-weather"
   readonly property string bundledSitesPath: Qt.resolvedUrl("data/site_list_towns_en.csv").toString().replace(/^file:\/\//, "")
 
   function applySites(text) {
@@ -329,12 +335,109 @@ Panel {
     id: siteListRefreshProc
     running: true
     command: ["bash", "-c",
-      "d=\"$HOME/.cache/omarchy/andrew.radar\"; f=\"$d/site_list_towns_en.csv\"; mkdir -p \"$d\"; "
+      "d=\"$HOME/.cache/omarchy/ca.orospakr.ec-radar-weather\"; f=\"$d/site_list_towns_en.csv\"; mkdir -p \"$d\"; "
       + "if [ -e \"$f\" ] && [ -n \"$(find \"$f\" -newermt '-30 days' 2>/dev/null)\" ]; then exit 0; fi; "
       + "curl -fsS --max-time 15 -o \"$f.tmp\" https://dd.weather.gc.ca/today/citypage_weather/docs/site_list_towns_en.csv && mv \"$f.tmp\" \"$f\""]
     onExited: function(exitCode) {
       if (exitCode === 0) cachedSitesFile.reload()
     }
+  }
+
+  // -------------------------------------------------------------- weather
+  //
+  // Citypage weather for the active tab. Files are published into per-UTC-
+  // hour directories under /today (there is no /yesterday root), so the
+  // probe walks today's hour listings newest-first and takes the newest
+  // file for the site. Parsed results are cached per site for the poll
+  // interval, which makes tab switches instant and free.
+  property var weather: null
+  property var weatherCache: ({})
+  property bool weatherFetching: false
+  property bool weatherFailed: false
+  property string weatherSiteCode: ""
+  property int weatherEpoch: 0
+  readonly property int weatherPaneWidth: Style.space(500)
+
+  // The site whose weather is shown: the active city, or for Auto the
+  // nearest site to the geoip fix.
+  readonly property var activeSite: autoActive ? autoSite : activeCity
+  onActiveSiteChanged: requestWeather(false)
+
+  function requestWeather(force) {
+    var site = activeSite
+    if (!site || !site.siteCode || !site.province || String(site.siteCode) === "legacy") {
+      // Invalidate any in-flight fetch too: a late callback for the
+      // previous tab must not repopulate the pane under this one.
+      weatherEpoch++
+      weatherFetching = false
+      weatherFailed = false
+      weatherSiteCode = ""
+      weather = null
+      return
+    }
+    var code = String(site.siteCode)
+    var cached = weatherCache[code]
+    if (!force && cached && Date.now() - cached.at < pollMinutes * 60000) {
+      weatherSiteCode = code
+      weather = cached.data
+      weatherFailed = false
+      return
+    }
+    if (weatherFetching && weatherSiteCode === code) return
+    weatherEpoch++
+    weatherSiteCode = code
+    weatherFetching = true
+    weatherFailed = false
+    // Show the stale cache, if any, while the fetch runs.
+    weather = cached ? cached.data : null
+    probeWeatherListing(Weather.citypageProbeUrls(site.province, Date.now()), 0, code, weatherEpoch)
+  }
+
+  // Walk the hour-directory listings until one contains a file for the
+  // site. Every callback checks the epoch so a tab switch mid-flight
+  // abandons the stale chain instead of racing the new one.
+  function probeWeatherListing(urls, index, code, epoch) {
+    if (epoch !== weatherEpoch) return
+    if (index >= urls.length) { weatherDone(epoch, code, null); return }
+    var xhr = new XMLHttpRequest()
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== XMLHttpRequest.DONE) return
+      if (epoch !== root.weatherEpoch) return
+      var file = xhr.status === 200 ? Weather.pickCitypageFile(xhr.responseText, code, "en") : null
+      if (file) root.fetchWeatherXml(urls[index] + file, code, epoch)
+      else root.probeWeatherListing(urls, index + 1, code, epoch)
+    }
+    xhr.open("GET", urls[index])
+    xhr.send()
+  }
+
+  function fetchWeatherXml(url, code, epoch) {
+    var xhr = new XMLHttpRequest()
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== XMLHttpRequest.DONE) return
+      if (epoch !== root.weatherEpoch) return
+      var parsed = null
+      if (xhr.status === 200) {
+        try { parsed = Weather.parseCitypage(xhr.responseText) } catch (e) { parsed = null }
+      }
+      root.weatherDone(epoch, code, parsed)
+    }
+    xhr.open("GET", url)
+    xhr.send()
+  }
+
+  function weatherDone(epoch, code, parsed) {
+    if (epoch !== weatherEpoch) return
+    weatherFetching = false
+    if (!parsed) {
+      // Whatever was on screen (cached data or the empty state) stays.
+      weatherFailed = true
+      return
+    }
+    var cache = weatherCache
+    cache[code] = { at: Date.now(), data: parsed }
+    weatherCache = cache
+    if (weatherSiteCode === code) weather = parsed
   }
 
   // ------------------------------------------------------------- dark map
@@ -502,12 +605,15 @@ Panel {
     return true
   }
 
-  function refresh() {
+  // `force` (the R key / middle-click) refetches weather even when the
+  // per-site cache is fresh; timers and opens go through the cache.
+  function refresh(force) {
     // Only when the panel is actually open: the poll timer's triggeredOnStart
     // refresh fires before the bar injects settings, and a geolocate started
     // then couldn't see a cached fix. The startup warm-up is the injection-
     // delayed Timer below; every user-driven refresh path has the panel open.
     if (autoActive && opened) requestAutoFix()
+    requestWeather(force === true)
     if (fetching) return
     fetching = true
 
@@ -598,7 +704,7 @@ Panel {
     open: root.opened
     centerOnBar: true
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(root.mapWidth)
+    contentWidth: panel.fittedContentWidth(root.mapWidth + Style.space(16) + root.weatherPaneWidth)
     contentHeight: panel.fittedContentHeight(column.implicitHeight)
 
     PanelKeyCatcher {
@@ -619,7 +725,7 @@ Panel {
         if (root.activeCity) root.openRemoveMenu(root.active, tabs.chipForValue(root.active))
       }
       onTextKey: function(t) {
-        if (t === "r" || t === "R") { root.refresh(); return }
+        if (t === "r" || t === "R") { root.refresh(true); return }
         if (t === "a" || t === "A" || t === "+") { cityPicker.open(); return }
         // 1 = Auto, 2… = the cities in tab order.
         var n = parseInt(t, 10)
@@ -635,7 +741,7 @@ Panel {
 
         PanelHero {
           width: parent.width
-          title: "Radar"
+          title: "Radar & Weather"
           meta: root.statusNote
           detail: root.frameLabel
           foreground: root.foreground
@@ -744,145 +850,168 @@ Panel {
           }
         }
 
-        // ---- Map: base layer, preloaded radar frames, location marker.
-        Rectangle {
-          id: mapFrame
+        // ---- Radar left, weather right.
+        Row {
           width: parent.width
-          height: root.mapHeight
-          radius: Style.cornerRadius
-          clip: true
-          color: Qt.rgba(0, 0, 0, 0.35)
-          border.width: 1
-          border.color: Style.normalBorderFor(root.foreground, Color.accent)
+          spacing: Style.space(16)
 
-          Item {
-            id: mapArea
-            // The WMS tiles are requested at mapWidth; centre them if the
-            // panel had to be narrowed to fit the screen.
+          Rectangle {
+            id: mapFrame
             width: root.mapWidth
             height: root.mapHeight
-            anchors.centerIn: parent
-            visible: root.hasLocation
+            radius: Style.cornerRadius
+            clip: true
+            color: Qt.rgba(0, 0, 0, 0.35)
+            border.width: 1
+            border.color: Style.normalBorderFor(root.foreground, Color.accent)
 
-            Image {
-              id: basemap
-              anchors.fill: parent
-              asynchronous: true
-              source: root.hasLocation ? root.basemapUrl : ""
-              // Knocked back so the radar returns stay the brightest thing on
-              // the map without the roads and shorelines becoming unreadable.
-              // The dark version needs a little more knock-back still.
-              opacity: 0.82 - 0.12 * root.darkAmount
-
-              // invert + hue-rotate(180deg), the CSS "dark map" recipe: a
-              // plain invert would leave the lakes brown. Only the basemap is
-              // layered — the radar frames above it keep their real colours —
-              // and in light mode the layer stays off entirely, so nothing
-              // about the old render path changes.
-              layer.enabled: root.darkAmount > 0
-              layer.smooth: true
-              layer.effect: ShaderEffect {
-                property var source: null
-                property real amount: root.darkAmount
-                fragmentShader: Qt.resolvedUrl("shaders/darkmap.frag.qsb")
-              }
-            }
-
-            Repeater {
-              model: root.frameModel
+            Item {
+              id: mapArea
+              // The WMS tiles are requested at mapWidth; centre them if the
+              // panel had to be narrowed to fit the screen.
+              width: root.mapWidth
+              height: root.mapHeight
+              anchors.centerIn: parent
+              visible: root.hasLocation
 
               Image {
-                required property int index
-                required property var modelData
-
+                id: basemap
                 anchors.fill: parent
                 asynchronous: true
-                source: root.frameUrl(modelData.time)
-                // Load-bearing: a rebuilt frame list re-creates every delegate,
-                // and Qt's pixmap cache is what keeps that to downloading only
-                // the genuinely new timestamps — or, on a return to an
-                // already-viewed location, none at all.
-                cache: true
-                // Opacity, not source-swapping: every frame stays decoded in
-                // the scene graph so advancing costs nothing and never blanks.
-                opacity: index === root.frameIndex ? 1 : 0
-                visible: opacity > 0
+                source: root.hasLocation ? root.basemapUrl : ""
+                // Knocked back so the radar returns stay the brightest thing on
+                // the map without the roads and shorelines becoming unreadable.
+                // The dark version needs a little more knock-back still.
+                opacity: 0.82 - 0.12 * root.darkAmount
 
-                property bool counted: false
-                onStatusChanged: {
-                  if (counted) return
-                  if (status === Image.Ready || status === Image.Error) {
-                    counted = true
-                    root.noteFrameSettled(status)
+                // invert + hue-rotate(180deg), the CSS "dark map" recipe: a
+                // plain invert would leave the lakes brown. Only the basemap is
+                // layered — the radar frames above it keep their real colours —
+                // and in light mode the layer stays off entirely, so nothing
+                // about the old render path changes.
+                layer.enabled: root.darkAmount > 0
+                layer.smooth: true
+                layer.effect: ShaderEffect {
+                  property var source: null
+                  property real amount: root.darkAmount
+                  fragmentShader: Qt.resolvedUrl("shaders/darkmap.frag.qsb")
+                }
+              }
+
+              Repeater {
+                model: root.frameModel
+
+                Image {
+                  required property int index
+                  required property var modelData
+
+                  anchors.fill: parent
+                  asynchronous: true
+                  source: root.frameUrl(modelData.time)
+                  // Load-bearing: a rebuilt frame list re-creates every delegate,
+                  // and Qt's pixmap cache is what keeps that to downloading only
+                  // the genuinely new timestamps — or, on a return to an
+                  // already-viewed location, none at all.
+                  cache: true
+                  // Opacity, not source-swapping: every frame stays decoded in
+                  // the scene graph so advancing costs nothing and never blanks.
+                  opacity: index === root.frameIndex ? 1 : 0
+                  visible: opacity > 0
+
+                  property bool counted: false
+                  onStatusChanged: {
+                    if (counted) return
+                    if (status === Image.Ready || status === Image.Error) {
+                      counted = true
+                      root.noteFrameSettled(status)
+                    }
                   }
+                }
+              }
+
+              // Active location, projected into the bbox. For auto this is the
+              // geoip fix — coarse, but honest about what is being centred on.
+              Rectangle {
+                id: marker
+                width: Style.space(9)
+                height: width
+                radius: width / 2
+                color: "transparent"
+                border.width: Math.max(1, Style.space(2))
+                border.color: Color.accent
+                x: (root.longitude - root.minLon) / (root.maxLon - root.minLon) * mapArea.width - width / 2
+                y: (root.maxLat - root.latitude) / (root.maxLat - root.minLat) * mapArea.height - height / 2
+
+                Rectangle {
+                  anchors.centerIn: parent
+                  width: Math.max(1, Style.space(3))
+                  height: width
+                  radius: width / 2
+                  color: Color.accent
                 }
               }
             }
 
-            // Active location, projected into the bbox. For auto this is the
-            // geoip fix — coarse, but honest about what is being centred on.
-            Rectangle {
-              id: marker
-              width: Style.space(9)
-              height: width
-              radius: width / 2
-              color: "transparent"
-              border.width: Math.max(1, Style.space(2))
-              border.color: Color.accent
-              x: (root.longitude - root.minLon) / (root.maxLon - root.minLon) * mapArea.width - width / 2
-              y: (root.maxLat - root.latitude) / (root.maxLat - root.minLat) * mapArea.height - height / 2
+            // Empty state for the Auto tab before any fix has ever arrived.
+            Text {
+              anchors.centerIn: parent
+              visible: !root.hasLocation
+              text: root.autoFixFailed ? "Location unavailable — press R to retry" : "Locating…"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
 
-              Rectangle {
+            // Paused badge, so a stopped loop never looks like a stuck fetch.
+            Rectangle {
+              visible: !root.playing && root.frameTimes.length > 0 && root.hasLocation
+              anchors.top: parent.top
+              anchors.right: parent.right
+              anchors.margins: Style.space(8)
+              width: pausedLabel.implicitWidth + Style.space(12)
+              height: pausedLabel.implicitHeight + Style.space(6)
+              radius: Style.cornerRadius
+              color: Qt.rgba(0, 0, 0, 0.55)
+
+              Text {
+                id: pausedLabel
                 anchors.centerIn: parent
-                width: Math.max(1, Style.space(3))
-                height: width
-                radius: width / 2
-                color: Color.accent
+                text: "PAUSED"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1.2
+              }
+            }
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+              onClicked: function(mouse) {
+                if (mouse.button === Qt.MiddleButton) root.refresh(true)
+                else root.playing = !root.playing
               }
             }
           }
 
-          // Empty state for the Auto tab before any fix has ever arrived.
-          Text {
-            anchors.centerIn: parent
-            visible: !root.hasLocation
-            text: root.autoFixFailed ? "Location unavailable — press R to retry" : "Locating…"
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-          }
-
-          // Paused badge, so a stopped loop never looks like a stuck fetch.
-          Rectangle {
-            visible: !root.playing && root.frameTimes.length > 0 && root.hasLocation
-            anchors.top: parent.top
-            anchors.right: parent.right
-            anchors.margins: Style.space(8)
-            width: pausedLabel.implicitWidth + Style.space(12)
-            height: pausedLabel.implicitHeight + Style.space(6)
-            radius: Style.cornerRadius
-            color: Qt.rgba(0, 0, 0, 0.55)
-
-            Text {
-              id: pausedLabel
-              anchors.centerIn: parent
-              text: "PAUSED"
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-              font.letterSpacing: 1.2
-            }
-          }
-
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            acceptedButtons: Qt.LeftButton | Qt.MiddleButton
-            onClicked: function(mouse) {
-              if (mouse.button === Qt.MiddleButton) root.refresh()
-              else root.playing = !root.playing
-            }
+          WeatherPane {
+            id: weatherPane
+            // Fill whatever width the panel actually got: the shell may
+            // clamp contentWidth below the request, and a fixed width
+            // would overflow the panel border.
+            width: Math.max(Style.space(220), parent.width - root.mapWidth - Style.space(16))
+            height: Math.max(implicitHeight, mapFrame.height)
+            weather: root.weather
+            statusText: root.weatherFetching ? "Loading weather…"
+              : (root.weatherFailed ? "Weather unavailable — R retries"
+              : (root.activeSite ? "" : "Waiting for location…"))
+            stale: root.weatherFailed && !!root.weather
+            foreground: root.foreground
+            dim: root.dim
+            accent: Color.accent
+            fontFamily: root.fontFamily
           }
         }
 

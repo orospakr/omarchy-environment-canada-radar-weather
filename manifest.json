@@ -1,15 +1,19 @@
 {
   "schemaVersion": 1,
-  "id": "andrew.radar",
-  "name": "Radar",
-  "version": "1.2.0",
+  "id": "ca.orospakr.ec-radar-weather",
+  "name": "Environment Canada Radar & Weather",
+  "version": "2.0.0",
   "author": "andrew",
-  "description": "Animated Environment Canada weather radar loop with multi-location tabs",
-  "kinds": ["bar-widget"],
-  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "description": "Environment Canada weather: animated radar loop, current conditions, hourly and 7-day forecasts, multi-location tabs",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
   "barWidget": {
-    "displayName": "Radar",
-    "description": "Animated Environment Canada weather radar loop with multi-location tabs",
+    "displayName": "EC Radar & Weather",
+    "description": "Environment Canada weather: animated radar loop, current conditions, hourly and 7-day forecasts, multi-location tabs",
     "category": "Info",
     "allowMultiple": false,
     "defaultSection": "center",
@@ -24,14 +28,46 @@
       "darkMap": "auto"
     },
     "schema": [
-      { "key": "locations", "type": "array", "label": "Saved cities (managed from the panel)" },
-      { "key": "active", "type": "string", "label": "Active tab (\"auto\" or a siteCode)" },
-      { "key": "spanKm", "type": "number", "label": "Map span (km)" },
-      { "key": "frames", "type": "number", "label": "Frames in loop" },
-      { "key": "frameMs", "type": "number", "label": "Frame duration (ms)" },
-      { "key": "holdMs", "type": "number", "label": "Newest-frame hold (ms)" },
-      { "key": "pollMinutes", "type": "number", "label": "Background refresh (minutes)" },
-      { "key": "darkMap", "type": "string", "label": "Dark basemap (auto/on/off)" }
+      {
+        "key": "locations",
+        "type": "array",
+        "label": "Saved cities (managed from the panel)"
+      },
+      {
+        "key": "active",
+        "type": "string",
+        "label": "Active tab (\"auto\" or a siteCode)"
+      },
+      {
+        "key": "spanKm",
+        "type": "number",
+        "label": "Map span (km)"
+      },
+      {
+        "key": "frames",
+        "type": "number",
+        "label": "Frames in loop"
+      },
+      {
+        "key": "frameMs",
+        "type": "number",
+        "label": "Frame duration (ms)"
+      },
+      {
+        "key": "holdMs",
+        "type": "number",
+        "label": "Newest-frame hold (ms)"
+      },
+      {
+        "key": "pollMinutes",
+        "type": "number",
+        "label": "Background refresh (minutes)"
+      },
+      {
+        "key": "darkMap",
+        "type": "string",
+        "label": "Dark basemap (auto/on/off)"
+      }
     ]
   }
 }

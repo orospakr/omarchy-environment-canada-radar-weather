@@ -8,7 +8,7 @@ import qs.Ui
 // every lifecycle call is forwarded down into the lazily loaded Panel.qml.
 BarWidget {
   id: root
-  moduleName: "andrew.radar"
+  moduleName: "ca.orospakr.ec-radar-weather"
 
   function injectPanel() {
     var target = panelLoader.item
@@ -19,8 +19,10 @@ BarWidget {
     if ("hostWidget" in target) target.hostWidget = root
   }
 
+  // force=true: the pill's middle-click is an explicit "refresh now",
+  // so it bypasses the forecast cache like the panel's R key does.
   function refresh() {
-    if (panelLoader.item && panelLoader.item.refresh) panelLoader.item.refresh()
+    if (panelLoader.item && panelLoader.item.refresh) panelLoader.item.refresh(true)
   }
 
   function togglePanel() {

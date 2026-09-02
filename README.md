@@ -1,75 +1,89 @@
-# Radar — Environment Canada radar widget for the Omarchy bar
+# EC Radar & Weather — Environment Canada widget for the Omarchy bar
 
-An [Omarchy](https://omarchy.org/) shell bar widget that shows an animated
-weather radar loop from Environment and Climate Change Canada. A 󰐷 pill
-sits in the status bar; clicking it opens a panel with the last ~72 minutes
-of precipitation radar animated over a Government of Canada basemap, with
-location tabs along the top: **Auto** (geoip-detected) plus any cities you
-add from Environment Canada's official site list.
+An [Omarchy](https://omarchy.org/) shell bar widget for Environment and
+Climate Change Canada's weather services. A 󰐷 pill sits in the status bar;
+clicking it opens a panel with an animated precipitation-radar loop on the
+left and the full citypage weather feed on the right — current conditions,
+the next forecast period in Environment Canada's own words, a scrolling
+24-hour strip, and the week ahead. Location tabs along the top: **Auto**
+(geoip-detected) plus any cities you add from Environment Canada's official
+site list.
 
-![Radar panel showing the Greater Toronto Area](docs/screenshot.png)
+![Panel showing radar for the Greater Toronto Area beside the Toronto forecast](docs/screenshot.png)
 
 ## Features
 
 - **Location tabs** — a segmented control across the top of the panel.
   **Auto** locates you through [BeaconDB](https://beacondb.net/)'s geoip
   fallback (a coarse ~25 km fix — exactly the granularity a 280 km radar
-  view needs, with no Geoclue/portal dependency) and names the fix after
-  the nearest Environment Canada site. Further tabs are cities you pick;
-  **+** opens a searchable list of all ~855 citypage sites.
+  view needs, with no Geoclue/portal dependency) and snaps to the nearest
+  Environment Canada site. Further tabs are cities you pick; **+** opens a
+  searchable list of all ~855 citypage sites.
+- **Weather pane** — everything the citypage feed knows about the active
+  location: active **alerts** in a bordered banner, current conditions with
+  feels-like/humidity/wind, the next period's full **text forecast**
+  ("Mainly cloudy. 70 percent chance of showers…"), an hourly strip for the
+  **next 24 hours** (scroll it sideways with the wheel or by dragging), and
+  the **week ahead** — hover any day for its complete textual forecast.
 - **Star to manage** — in the "+" search popup every row carries a star:
   starred cities are your tabs. Toggle the star (click, or `s` on the
   highlighted row) to add/remove without leaving the popup; activating a
   row body adds the city and switches straight to it. Right-clicking a
-  city tab offers **Remove**.
-- **Animated loop** — 12 frames at Environment Canada's native 6-minute
-  cadence (~72 minutes of history), with a hold on the newest frame before
-  the loop rewinds.
-- **Real basemap** — NRCan's CBMT cartographic basemap under the radar
-  layer, pixel-aligned via matching WMS bounding boxes, with a marker at
-  the active location (for Auto: the geoip fix itself).
-- **Always warm** — the widget prefetches frames at shell startup and
-  refreshes in the background every 30 minutes, so the panel opens
-  instantly. Opening it also triggers an immediate refresh, so what you
-  see is never staler than the radar's own publishing lag. Frames are
-  served from Qt's pixmap cache, so switching back to an already-viewed
-  tab costs no downloads.
+  city tab offers **Remove**; drag tabs to reorder.
+- **Animated radar loop** — 12 frames at Environment Canada's native
+  6-minute cadence (~72 minutes of history), with a hold on the newest
+  frame before the loop rewinds, over NRCan's CBMT basemap with a marker at
+  the active location.
+- **Always warm** — radar frames and the forecast prefetch at shell startup
+  and refresh in the background, so the panel opens instantly. Forecasts
+  are cached per city, so switching tabs is instant and free.
 - **Dark basemap** — on a dark desktop the bright CBMT paper map is run
-  through an invert + 180° hue-rotate shader, so opening the panel doesn't
-  flash white. Water stays blue, roads stay yellow, and the radar returns
-  above it are left untouched. Follows the desktop's light/dark setting
-  live; see `darkMap` below.
-- **Graceful degradation** — on fetch failure the last loop stays visible
-  with an "Offline" note; partial frame failures are counted in the
-  footer. The last good geoip fix is cached, so Auto works offline too.
+  through an invert + 180° hue-rotate shader; follows the desktop's
+  light/dark setting live (`darkMap` below).
+- **Graceful degradation** — on fetch failure the last radar loop stays up
+  with an "Offline" note and the last forecast is served from cache; the
+  last good geoip fix is cached too, so Auto works offline.
 
 ## Interactions
 
 | Input | Action |
 |---|---|
 | Left-click pill | Toggle panel |
-| Middle-click pill / `R` | Refresh now (radar + geoip fix) |
+| Middle-click pill / `R` | Refresh now (radar, forecast, geoip fix) |
 | Click a tab | Switch location |
 | `1`–`9` | Jump to tab (1 = Auto) |
 | Right-click a city tab / `x` | Remove that city (via context menu) |
 | Drag a city tab | Reorder your cities |
 | `+` tab / `a` | Search & manage cities (star = keep as tab) |
-| Click map / Space / Enter | Play & pause |
+| Hover a day in Week Ahead | Full textual forecast for that day |
+| Wheel / drag on the hourly strip | Scroll through the 24 hours |
+| Click map / Space / Enter | Play & pause the loop |
 | `←` / `→` | Step frames (auto-pauses) |
 | Esc | Close panel (or the open popup) |
 | Tab / Shift-Tab | Switch to adjacent bar panels |
 
 ## Install
 
-The directory name must match the plugin id (`andrew.radar`):
+The directory name must match the plugin id (`ca.orospakr.ec-radar-weather`):
 
 ```bash
-git clone <this repo> ~/.config/omarchy/plugins/andrew.radar
-omarchy plugin enable andrew.radar --section center --after omarchy.weather
+git clone <this repo> ~/.config/omarchy/plugins/ca.orospakr.ec-radar-weather
+omarchy plugin enable ca.orospakr.ec-radar-weather --section center --after omarchy.weather
 ```
 
 The Omarchy shell hot-reloads plugins; no restart needed. Adjust the
 placement flags to taste (see `omarchy plugin enable --help`).
+
+### Upgrading from `andrew.radar` (≤ 1.2.0)
+
+This plugin was renamed; the id on disk and in your bar layout must move
+with it, and your saved cities live on the layout entry:
+
+```bash
+mv ~/.config/omarchy/plugins/andrew.radar ~/.config/omarchy/plugins/ca.orospakr.ec-radar-weather
+sed -i 's/"andrew\.radar"/"ca.orospakr.ec-radar-weather"/' ~/.config/omarchy/shell.json
+omarchy restart shell
+```
 
 ## Configuration
 
@@ -78,7 +92,7 @@ the widget's layout entry in `~/.config/omarchy/shell.json`:
 
 ```json
 {
-  "id": "andrew.radar",
+  "id": "ca.orospakr.ec-radar-weather",
   "locations": [
     { "siteCode": "s0000623", "name": "Ottawa (Kanata - Orléans)", "province": "ON",
       "latitude": 45.42, "longitude": -75.69 }
@@ -96,7 +110,8 @@ the widget's layout entry in `~/.config/omarchy/shell.json`:
 
 Entries from older versions that set `latitude` / `longitude` /
 `locationName` directly are migrated automatically into a single saved
-city on first load.
+city on first load. (Such a migrated city has no citypage site code, so it
+gets radar but no forecast — re-add it through **+** to fix that.)
 
 The remaining tuning keys are optional; defaults shown:
 
@@ -116,7 +131,8 @@ The remaining tuning keys are optional; defaults shown:
 - `frames` — loop length (6 minutes of history per frame, up to the 3-hour
   window GeoMet serves).
 - `frameMs` / `holdMs` — animation speed and newest-frame hold.
-- `pollMinutes` — background refresh cadence while the panel is closed.
+- `pollMinutes` — background refresh cadence for radar and forecasts (the
+  per-city forecast cache uses the same value as its TTL).
 - `darkMap` — `auto` (follow the desktop), `on`, or `off`. Unknown values
   fall back to `auto`.
 
@@ -130,13 +146,20 @@ shell theme's background colour, using the same `R+G+B > 382` rule as
 
 ## How it works
 
-Three services, no API keys:
+Four services, no API keys:
 
 - **Radar**: [MSC GeoMet](https://eccc-msc.github.io/open-data/msc-geomet/readme_en/)
   layer `RADAR_1KM_RRAI` (1 km rain-rate composite). The available time
   window is discovered from `GetCapabilities` — it is global to the layer,
   so switching tabs never re-asks — then one transparent PNG is fetched
   per 6-minute timestamp for the active bbox.
+- **Forecasts**: the [MSC Datamart citypage feed](https://dd.weather.gc.ca/today/citypage_weather/).
+  Files land in per-UTC-hour directories (`{PROV}/{HH}/…_MSC_CitypageWeather_{site}_en.xml`)
+  with no "latest" alias and no `/yesterday` root, so the widget probes
+  today's hour listings newest-first and takes the newest file for the
+  site. The XML is parsed by `Weather.js` — a small dependency-free
+  library covering current conditions, the 12 day/night forecast periods,
+  the 24 hourly entries, warnings, and sun times.
 - **Basemap**: NRCan's
   [CBMT](https://www.nrcan.gc.ca/earth-sciences/geography/topographic-information/web-services/9110)
   WMS, requested with the same `EPSG:4326` bounding box so the layers
@@ -146,7 +169,7 @@ Three services, no API keys:
   body means "locate by IP"). City search uses the
   [citypage site list](https://dd.weather.gc.ca/today/citypage_weather/docs/)
   — a snapshot is bundled in `data/` for offline use and a copy in
-  `~/.cache/omarchy/andrew.radar/` is refreshed monthly.
+  `~/.cache/omarchy/ca.orospakr.ec-radar-weather/` is refreshed monthly.
 
 The dark basemap is a small `ShaderEffect` applied as the basemap `Image`'s
 `layer.effect` (only when it is actually on — in light mode the layer is
@@ -158,10 +181,11 @@ The panel is a Quickshell/QML component following the Omarchy shell's
 `bar-widget` plugin contract (`manifest.json` + `BarWidget.qml` +
 `Panel.qml`, modelled on the built-in `omarchy.weather` plugin). All
 fetches are asynchronous — QML's `XMLHttpRequest` for capabilities,
-`curl` subprocesses for geoip and the site list, and network-sourced
-`Image` elements (decoded off the main thread) for frames — so the bar
-never blocks.
+directory listings, and forecast XML, `curl` subprocesses for geoip and the
+site list, and network-sourced `Image` elements (decoded off the main
+thread) for frames — so the bar never blocks. Hourly times and sun times
+are shown in this machine's local timezone.
 
-Radar data: [Environment and Climate Change Canada](https://weather.gc.ca/).
+Weather and radar data: [Environment and Climate Change Canada](https://weather.gc.ca/).
 Basemap: Natural Resources Canada. IP geolocation: BeaconDB (DB-IP data,
 CC BY 4.0). This project is not affiliated with any of them.
