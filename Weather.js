@@ -289,6 +289,23 @@ function iconIsSevere(iconCode) {
     return _SEVERE[padIcon(iconCode)] === 1;
 }
 
+// Bar tint for a warning/advisory. EC's alertColourLevel (surfaced on the
+// warning as `priority`, alongside the legacy priority attr's values) wins;
+// fall back to the event type. Returns a colour string, or null for
+// grey/informational events -- the caller renders those muted.
+function warningColour(warning) {
+    var level = ((warning && warning.priority) || "").toLowerCase();
+    if (level === "red" || level === "urgent") return "#e0524d";
+    if (level === "orange" || level === "high") return "#e08b3c";
+    if (level === "yellow" || level === "medium") return "#e3b341";
+    if (level === "grey" || level === "gray" || level === "low") return null;
+    var type = ((warning && warning.type) || "").toLowerCase();
+    if (type === "warning") return "#e0524d";
+    if (type === "watch") return "#e08b3c";
+    if (type === "advisory") return "#e3b341";
+    return null;
+}
+
 // ---------------------------------------------------------------------------
 // Fetch-strategy helpers (the QML side does the actual HTTP)
 // ---------------------------------------------------------------------------

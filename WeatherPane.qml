@@ -100,34 +100,60 @@ Item {
     visible: !!root.weather
     spacing: Style.space(14)
 
-    // ---- Active alerts, most-salient first in the column.
-    Rectangle {
-      visible: !!root.weather && root.weather.warnings.length > 0
+    // ---- Active alerts, most-salient first: all events share one row,
+    // each bar an equal slice (advisory text is short), tinted by EC's
+    // alert colour level (red/orange/yellow; grey and unknown render muted).
+    RowLayout {
       Layout.fillWidth: true
-      implicitHeight: warningText.implicitHeight + Style.space(10)
-      radius: Style.cornerRadius
-      color: "transparent"
-      border.width: 1
-      border.color: root.accent
+      visible: !!root.weather && root.weather.warnings.length > 0
+      spacing: Style.space(8)
 
-      Text {
-        id: warningText
-        anchors.verticalCenter: parent.verticalCenter
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.leftMargin: Style.space(8)
-        anchors.rightMargin: Style.space(8)
-        elide: Text.ElideRight
-        text: {
-          if (!root.weather) return ""
-          var names = []
-          for (var i = 0; i < root.weather.warnings.length; i++)
-            names.push(root.weather.warnings[i].description)
-          return "󰀦 " + names.join(" · ")
+      Repeater {
+        model: root.weather ? root.weather.warnings : []
+
+        Rectangle {
+          id: warningBar
+          required property var modelData
+          readonly property color tint: {
+            var c = Weather.warningColour(modelData)
+            return c ? c : root.dim
+          }
+
+          Layout.fillWidth: true
+          Layout.preferredWidth: 1
+          implicitHeight: warningText.implicitHeight + Style.space(10)
+          radius: Style.cornerRadius
+          color: Qt.alpha(warningBar.tint, 0.14)
+          border.width: 1
+          border.color: warningBar.tint
+
+          Row {
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: Style.space(8)
+            anchors.rightMargin: Style.space(8)
+            spacing: Style.space(6)
+
+            Text {
+              id: warningGlyph
+              text: "󰀦"
+              color: warningBar.tint
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Text {
+              id: warningText
+              width: parent.width - warningGlyph.width - parent.spacing
+              elide: Text.ElideRight
+              text: warningBar.modelData.description || ""
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
         }
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
       }
     }
 
