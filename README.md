@@ -71,15 +71,47 @@ The same panel on a light theme:
 
 ## Install
 
-The directory name must match the plugin id (`ca.orospakr.ec-radar-weather`):
-
 ```bash
-git clone <this repo> ~/.config/omarchy/plugins/ca.orospakr.ec-radar-weather
-omarchy plugin enable ca.orospakr.ec-radar-weather --section center --after omarchy.weather
+omarchy plugin add https://github.com/orospakr/omarchy-environment-canada-radar-weather.git --enable
 ```
 
-The Omarchy shell hot-reloads plugins; no restart needed. Adjust the
-placement flags to taste (see `omarchy plugin enable --help`).
+The widget lands in the bar's center section by default (next to the
+built-in weather pill). Move it with:
+
+```bash
+omarchy bar move ca.orospakr.ec-radar-weather --section center --after omarchy.weather
+```
+
+Manual alternative: clone the repository into
+`~/.config/omarchy/plugins/ca.orospakr.ec-radar-weather` (the directory
+name must match the plugin id) and run `omarchy plugin enable
+ca.orospakr.ec-radar-weather`. The shell discovers plugins automatically.
+
+## Remove
+
+```bash
+omarchy plugin remove ca.orospakr.ec-radar-weather
+```
+
+That deletes the plugin directory and its bar entry. The only other files
+the plugin creates are a cached city list under
+`~/.cache/omarchy/ca.orospakr.ec-radar-weather/`, which you can delete by
+hand.
+
+## Requirements and what it touches
+
+- Omarchy with the Quattro shell (Quickshell). No extra packages: it uses
+  `curl`, `bash`, and coreutils, which Omarchy ships.
+- No root, `sudo`, services, timers, or installers. Everything runs inside
+  the shell process under your user.
+- **Network**: Environment Canada (`geo.weather.gc.ca`, `dd.weather.gc.ca`,
+  `weather.gc.ca`), Natural Resources Canada (`maps.geogratis.gc.ca`), and
+  BeaconDB (`api.beacondb.net`, for the Auto tab's IP-based location fix).
+  See [How it works](#how-it-works).
+- **Writes**: its own entry in `~/.config/omarchy/shell.json` (your saved
+  cities and the cached location fix, through the shell's normal settings
+  path) and the cache directory above. Nothing else in your configuration
+  is read or modified.
 
 ### Upgrading from `andrew.radar` (≤ 1.2.0)
 
@@ -229,3 +261,9 @@ are shown in this machine's local timezone.
 Weather and radar data: [Environment and Climate Change Canada](https://weather.gc.ca/).
 Basemap: Natural Resources Canada. IP geolocation: BeaconDB (DB-IP data,
 CC BY 4.0). This project is not affiliated with any of them.
+
+## License
+
+[MIT](LICENSE). The bundled city list in `data/` is Environment Canada
+data, used under the
+[ECCC Data Servers End-use Licence](https://eccc-msc.github.io/open-data/licence/readme_en/).
