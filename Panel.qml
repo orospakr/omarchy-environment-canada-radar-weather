@@ -137,7 +137,11 @@ Panel {
     return null
   }
   readonly property bool autoActive: activeCity === null
-  readonly property bool hasLocation: !autoActive || hasFix
+  // Auto counts as located only when the fix is near enough to a citypage
+  // site to mean anything: beyond coverageKm the fix is outside Canada (or
+  // deep in the high Arctic) and the map would be blank, so the panel shows
+  // the out-of-coverage state instead of an empty loop.
+  readonly property bool hasLocation: !autoActive || (hasFix && !autoOutOfRange)
 
   // The fallback coordinates only keep the bbox math finite while the map
   // is hidden behind the "Locating…" empty state; they are never shown.
@@ -158,7 +162,13 @@ Panel {
   // as the weather source while Auto is active.
   readonly property var autoSite: (!hasFix || sites.length === 0) ? null
     : Model.nearestSite(sites, Number(autoFix.latitude), Number(autoFix.longitude))
-  readonly property string autoName: autoSite ? autoSite.name : "Auto"
+  readonly property real coverageKm: 200
+  readonly property real autoDistanceKm: (hasFix && autoSite)
+    ? Model.distanceKm(Number(autoFix.latitude), Number(autoFix.longitude),
+                       Number(autoSite.latitude), Number(autoSite.longitude))
+    : 0
+  readonly property bool autoOutOfRange: hasFix && autoSite !== null && autoDistanceKm > coverageKm
+  readonly property string autoName: (autoSite && !autoOutOfRange) ? autoSite.name : "Auto"
   readonly property string activeName: autoActive ? autoName : String(activeCity.name)
 
   function cityEntry(site) {
@@ -365,7 +375,7 @@ Panel {
 
   // The site whose weather is shown: the active city, or for Auto the
   // nearest site to the geoip fix.
-  readonly property var activeSite: autoActive ? autoSite : activeCity
+  readonly property var activeSite: autoActive ? (autoOutOfRange ? null : autoSite) : activeCity
   onActiveSiteChanged: requestWeather(false)
 
   function requestWeather(force) {
@@ -600,7 +610,10 @@ Panel {
   readonly property color chipText: "#f2f2f2"
 
   readonly property string statusNote: {
-    if (!hasLocation) return autoFixFailed ? "Location unavailable — R retries" : "Locating…"
+    if (!hasLocation) {
+      if (autoOutOfRange) return "AUTO · OUT OF COVERAGE"
+      return autoFixFailed ? "Location unavailable — R retries" : "Locating…"
+    }
     var name = (autoActive ? "AUTO · " : "") + activeName.toUpperCase()
     if (frameTimes.length === 0) return name + (fetchFailed ? " · Radar unavailable" : " · Loading radar…")
     if (fetchFailed) return name + " · Offline — showing last loop"
@@ -1151,14 +1164,139 @@ Panel {
               }
             }
 
-            // Empty state for the Auto tab before any fix has ever arrived.
-            Text {
+            // Empty state for the Auto tab: before any fix has ever arrived,
+            // or when the fix is too far from any Environment Canada site
+            // for the map or forecast to mean anything.
+            Column {
               anchors.centerIn: parent
+              width: parent.width - Style.space(32)
               visible: !root.hasLocation
-              text: root.autoFixFailed ? "Location unavailable — press R to retry" : "Locating…"
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
+              spacing: Style.space(8)
+
+              // Desert-island silhouette, drawn in the dim foreground so it
+              // reads as a placeholder on either theme.
+              Canvas {
+                id: islandArt
+                visible: root.autoOutOfRange
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: Style.space(132)
+                height: Style.space(88)
+                property color ink: root.dim
+                onInkChanged: requestPaint()
+                onWidthChanged: requestPaint()
+                onHeightChanged: requestPaint()
+                onPaint: {
+                  var ctx = getContext("2d")
+                  var w = width, h = height
+                  ctx.clearRect(0, 0, w, h)
+                  ctx.fillStyle = ink
+                  ctx.strokeStyle = ink
+                  ctx.lineCap = "round"
+                  ctx.lineJoin = "round"
+
+                  // Sand: a low mound, its lower half trimmed at the waterline.
+                  var sea = h * 0.86
+                  var seaLine = Math.max(1, h * 0.03)
+                  ctx.beginPath()
+                  ctx.ellipse(w * 0.16, sea - h * 0.2, w * 0.68, h * 0.4)
+                  ctx.fill()
+                  ctx.clearRect(0, sea + seaLine / 2, w, h - sea)
+
+                  // Water: a flat line with a small gap either side of the island.
+                  ctx.lineWidth = seaLine
+                  ctx.beginPath(); ctx.moveTo(w * 0.02, sea); ctx.lineTo(w * 0.14, sea); ctx.stroke()
+                  ctx.beginPath(); ctx.moveTo(w * 0.86, sea); ctx.lineTo(w * 0.98, sea); ctx.stroke()
+
+                  // Trunk: a gentle lean to the right.
+                  var bx = w * 0.46, by = sea - h * 0.02
+                  var tx = w * 0.60, ty = h * 0.24
+                  ctx.lineWidth = Math.max(2, w * 0.035)
+                  ctx.beginPath()
+                  ctx.moveTo(bx, by)
+                  ctx.quadraticCurveTo(w * 0.48, h * 0.45, tx, ty)
+                  ctx.stroke()
+
+                  // Fronds: lens-shaped leaves radiating from the crown, drooping.
+                  function frond(ang, len, wid, droop) {
+                    var ex = tx + Math.cos(ang) * len
+                    var ey = ty + Math.sin(ang) * len + droop
+                    var mx = tx + Math.cos(ang) * len * 0.5
+                    var my = ty + Math.sin(ang) * len * 0.5 + droop * 0.35
+                    var nx = -Math.sin(ang) * wid, ny = Math.cos(ang) * wid
+                    ctx.beginPath()
+                    ctx.moveTo(tx, ty)
+                    ctx.quadraticCurveTo(mx + nx, my + ny, ex, ey)
+                    ctx.quadraticCurveTo(mx - nx, my - ny, tx, ty)
+                    ctx.closePath()
+                    ctx.fill()
+                  }
+                  var L = w * 0.30, W = h * 0.075, D = h * 0.10
+                  frond(Math.PI * 1.02, L * 0.95, W, D)          // left
+                  frond(Math.PI * 1.22, L * 0.85, W, D * 0.6)    // upper left
+                  frond(Math.PI * 1.50, L * 0.62, W * 0.9, 0)    // straight up
+                  frond(Math.PI * 1.78, L * 0.85, W, D * 0.6)    // upper right
+                  frond(Math.PI * 1.98, L * 0.95, W, D)          // right
+                  frond(Math.PI * 0.18, L * 0.7, W, D * 1.3)     // low right, drooping
+
+                  // Coconuts at the crown.
+                  var cr = Math.max(1.5, w * 0.022)
+                  ctx.beginPath(); ctx.ellipse(tx - cr * 2.2, ty + cr * 0.6, cr * 2, cr * 2); ctx.fill()
+                  ctx.beginPath(); ctx.ellipse(tx + cr * 0.2, ty + cr * 1.2, cr * 2, cr * 2); ctx.fill()
+                }
+              }
+
+              Text {
+                visible: root.autoOutOfRange
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                textFormat: Text.StyledText
+                text: "<i>Hoser took off.</i> Out of the country or coverage area."
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              Text {
+                visible: root.autoOutOfRange
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                text: {
+                  var km = Math.round(root.autoDistanceKm / 10) * 10
+                  var site = root.autoSite ? (root.autoSite.name + ", " + root.autoSite.province) : "a forecast site"
+                  var s = "Your network places you about " + km.toLocaleString(Qt.locale(), "f", 0)
+                    + " km from the nearest Environment Canada site (" + site + ")."
+                  if (root.locations.length > 0)
+                    s += " Press 2 for " + String(root.locations[0].name) + ", or"
+                  return s
+                }
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Button {
+                visible: root.autoOutOfRange
+                anchors.horizontalCenter: parent.horizontalCenter
+                bordered: true
+                iconText: "+"
+                text: "Add a Canadian city"
+                foreground: root.foreground
+                accent: Color.accent
+                fontFamily: root.fontFamily
+                onClicked: cityPicker.open()
+              }
+
+              Text {
+                visible: !root.autoOutOfRange
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: root.autoFixFailed ? "Location unavailable — press R to retry" : "Locating…"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+              }
             }
 
             // Lightning state chip, top left of the map. Absent on frames
@@ -1277,7 +1415,8 @@ Panel {
             weather: root.weather
             statusText: root.weatherFetching ? "Loading weather…"
               : (root.weatherFailed ? "Weather unavailable — R retries"
-              : (root.activeSite ? "" : "Waiting for location…"))
+              : (root.activeSite ? ""
+              : (root.autoActive && root.autoOutOfRange ? "No nearby forecast site" : "Waiting for location…")))
             stale: root.weatherFailed && !!root.weather
             foreground: root.foreground
             dim: root.dim

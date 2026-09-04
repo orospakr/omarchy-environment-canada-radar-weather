@@ -22,7 +22,10 @@ The same panel on a light theme:
   fallback (a coarse ~25 km fix — exactly the granularity a 280 km radar
   view needs, with no Geoclue/portal dependency) and snaps to the nearest
   Environment Canada site. Further tabs are cities you pick; **+** opens a
-  searchable list of all ~855 citypage sites.
+  searchable list of all ~855 citypage sites. If the fix lands more than
+  200 km from any Environment Canada site (outside the country, or deep in
+  the high Arctic), the Auto tab shows an out-of-coverage state instead of
+  an empty map, with a button to add a Canadian city.
 - **Weather pane** — everything the citypage feed knows about the active
   location: active **alerts** in a bordered banner, current conditions with
   feels-like/humidity/wind, the next period's full **text forecast**

@@ -70,6 +70,18 @@ function filterSites(sites, query) {
 
 // Nearest site to a fix, equirectangular distance — plenty for naming a
 // ~25 km geoip fix; no need for haversine at these spans.
+// Great-circle distance in kilometres (haversine). nearestSite() only
+// ranks, so its flat approximation is fine there; a coverage threshold
+// needs the real thing.
+function distanceKm(lat1, lon1, lat2, lon2) {
+  var r = Math.PI / 180
+  var dLat = (lat2 - lat1) * r
+  var dLon = (lon2 - lon1) * r
+  var a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+    + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(dLon / 2) * Math.sin(dLon / 2)
+  return 2 * 6371 * Math.asin(Math.sqrt(Math.min(1, a)))
+}
+
 function nearestSite(sites, lat, lon) {
   var best = null
   var bestD = Infinity
