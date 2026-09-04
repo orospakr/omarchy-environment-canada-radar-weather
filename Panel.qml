@@ -1257,25 +1257,6 @@ Panel {
                 font.pixelSize: Style.font.body
               }
 
-              Text {
-                visible: root.autoOutOfRange
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
-                text: {
-                  var km = Math.round(root.autoDistanceKm / 10) * 10
-                  var site = root.autoSite ? (root.autoSite.name + ", " + root.autoSite.province) : "a forecast site"
-                  var s = "Your network places you about " + km.toLocaleString(Qt.locale(), "f", 0)
-                    + " km from the nearest Environment Canada site (" + site + ")."
-                  if (root.locations.length > 0)
-                    s += " Press 2 for " + String(root.locations[0].name) + ", or"
-                  return s
-                }
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-              }
-
               Button {
                 visible: root.autoOutOfRange
                 anchors.horizontalCenter: parent.horizontalCenter
