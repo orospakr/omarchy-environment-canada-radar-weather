@@ -105,7 +105,7 @@ hand.
 
 - Omarchy with the Quattro shell (Quickshell). No extra packages: it uses
   `curl`, `bash`, and coreutils, which Omarchy ships.
-- No root, `sudo`, services, timers, or installers. Everything runs inside
+- No root privileges, services, timers, or installers. Everything runs inside
   the shell process under your user.
 - **Network**: Environment Canada (`geo.weather.gc.ca`, `dd.weather.gc.ca`,
   `weather.gc.ca`), Natural Resources Canada (`maps.geogratis.gc.ca`), and
