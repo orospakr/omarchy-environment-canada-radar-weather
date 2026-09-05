@@ -86,6 +86,7 @@ Item {
   // Empty / loading / failed state, centered in whatever height the panel
   // gave the pane.
   Text {
+    textFormat: Text.PlainText
     anchors.centerIn: parent
     visible: !root.weather
     text: root.statusText
@@ -136,6 +137,7 @@ Item {
             spacing: Style.space(6)
 
             Text {
+              textFormat: Text.PlainText
               id: warningGlyph
               text: "󰀦"
               color: warningBar.tint
@@ -144,6 +146,7 @@ Item {
             }
 
             Text {
+              textFormat: Text.PlainText
               id: warningText
               width: parent.width - warningGlyph.width - parent.spacing
               elide: Text.ElideRight
@@ -163,6 +166,7 @@ Item {
       spacing: Style.space(12)
 
       Text {
+        textFormat: Text.PlainText
         anchors.verticalCenter: parent.verticalCenter
         text: root.current ? Weather.iconGlyph(root.current.iconCode) : ""
         color: root.foreground
@@ -171,6 +175,7 @@ Item {
       }
 
       Text {
+        textFormat: Text.PlainText
         anchors.verticalCenter: parent.verticalCenter
         text: root.current ? root.fmtTemp(root.current.temperature) : ""
         color: root.foreground
@@ -184,6 +189,7 @@ Item {
         spacing: Style.spacing.xxs
 
         Text {
+          textFormat: Text.PlainText
           text: root.current && root.current.condition !== null ? root.current.condition : ""
           color: root.foreground
           font.family: root.fontFamily
@@ -191,6 +197,7 @@ Item {
         }
 
         Text {
+          textFormat: Text.PlainText
           text: root.currentDetails
           color: root.dim
           font.family: root.fontFamily
@@ -206,6 +213,7 @@ Item {
       spacing: Style.spacing.xxs
 
       Text {
+        textFormat: Text.PlainText
         text: root.nextForecast ? String(root.nextForecast.period || "").toUpperCase() : ""
         color: root.dim
         font.family: root.fontFamily
@@ -214,6 +222,7 @@ Item {
       }
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         text: root.nextForecast ? (root.nextForecast.textSummary || root.nextForecast.summary || "") : ""
         color: root.foreground
@@ -234,6 +243,7 @@ Item {
       spacing: Style.spacing.sm
 
       Text {
+        textFormat: Text.PlainText
         text: "NEXT 24 HOURS"
         color: root.dim
         font.family: root.fontFamily
@@ -267,6 +277,7 @@ Item {
                 spacing: Style.spacing.xxs
 
                 Text {
+                  textFormat: Text.PlainText
                   width: parent.width
                   horizontalAlignment: Text.AlignHCenter
                   text: Qt.formatTime(new Date(modelData.at), "h ap")
@@ -276,6 +287,7 @@ Item {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   width: parent.width
                   horizontalAlignment: Text.AlignHCenter
                   text: Weather.iconGlyph(modelData.iconCode)
@@ -285,6 +297,7 @@ Item {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   width: parent.width
                   horizontalAlignment: Text.AlignHCenter
                   text: root.fmtTemp(modelData.temperature)
@@ -294,6 +307,7 @@ Item {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   width: parent.width
                   horizontalAlignment: Text.AlignHCenter
                   // A space, not "", so every cell keeps the same height.
@@ -332,6 +346,7 @@ Item {
       spacing: Style.spacing.sm
 
       Text {
+        textFormat: Text.PlainText
         text: "WEEK AHEAD"
         color: root.dim
         font.family: root.fontFamily
@@ -359,6 +374,7 @@ Item {
               spacing: Style.spacing.xxs
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 elide: Text.ElideRight
@@ -370,6 +386,7 @@ Item {
               }
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 text: {
@@ -382,6 +399,7 @@ Item {
               }
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 text: dayCell.modelData.day && dayCell.modelData.day.temperature
@@ -392,6 +410,7 @@ Item {
               }
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 text: dayCell.modelData.night && dayCell.modelData.night.temperature
@@ -439,6 +458,7 @@ Item {
 
     // ---- Issue time and sun times.
     Text {
+      textFormat: Text.PlainText
       Layout.fillWidth: true
       visible: root.footerLine !== ""
       elide: Text.ElideRight

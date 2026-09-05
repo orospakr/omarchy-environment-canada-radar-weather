@@ -115,6 +115,12 @@ hand.
   cities and the cached location fix, through the shell's normal settings
   path) and the cache directory above. Nothing else in your configuration
   is read or modified.
+- **Hardening**: everything fetched is treated as untrusted — all
+  remote-derived text is rendered as plain text (never rich text), the
+  XML/CSV parsers bound input size, field lengths and list counts, every
+  response is size-capped before it is parsed or cached, requests go only
+  to the fixed HTTPS hosts listed above, and the `curl` calls refuse
+  redirects, non-HTTPS protocols and oversized downloads.
 
 ### Upgrading from `andrew.radar` (≤ 1.2.0)
 

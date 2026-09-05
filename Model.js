@@ -4,21 +4,41 @@
 //   s0000458,Toronto,ON,43.65N,79.38W
 // Two header rows, then one site per line. The published file uses no
 // quoting (verified against the full list), so a plain split is enough.
+//
+// The file is fetched from the network, so it is bounded: the real list is
+// ~33 KB, ~855 rows of under 90 chars, names under 60 chars. Oversize input
+// parses to [] (the caller then keeps the bundled snapshot), overlong rows
+// are skipped, fields are truncated, and the row count is capped.
+var MAX_CSV_CHARS = 2000000
+var MAX_ROWS = 2000
+var MAX_LINE_CHARS = 400
+var MAX_FIELD_CHARS = 80
+
+function clipField(raw) {
+  var s = String(raw || "").trim()
+  return s.length > MAX_FIELD_CHARS ? s.slice(0, MAX_FIELD_CHARS) : s
+}
+
 function parseSiteList(csvText) {
   var out = []
-  var lines = String(csvText || "").split("\n")
-  for (var i = 0; i < lines.length; i++) {
+  var text = String(csvText || "")
+  if (text.length > MAX_CSV_CHARS) return out
+  var lines = text.split("\n")
+  for (var i = 0; i < lines.length && out.length < MAX_ROWS; i++) {
+    if (lines[i].length > MAX_LINE_CHARS) continue
     var parts = lines[i].trim().split(",")
     if (parts.length < 5) continue
     var code = parts[0].trim()
-    if (!/^s\d+$/.test(code)) continue // skips both header rows
+    // Every published code is "s" + 7 digits; this also skips both header
+    // rows. The same shape is required again before a code reaches a URL.
+    if (!/^s\d{7}$/.test(code)) continue
     var lat = parseHemisphere(parts[3], "N", "S")
     var lon = parseHemisphere(parts[4], "E", "W")
     if (lat === null || lon === null) continue
     out.push({
       siteCode: code,
-      name: parts[1].trim(),
-      province: parts[2].trim(),
+      name: clipField(parts[1]),
+      province: clipField(parts[2]),
       latitude: lat,
       longitude: lon
     })

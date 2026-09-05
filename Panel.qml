@@ -271,7 +271,10 @@ Panel {
 
   Process {
     id: geolocateProc
+    // Pinned to HTTPS on the fixed host, no redirects, and a body cap far
+    // above the ~170-byte real response.
     command: ["curl", "-fsS", "--max-time", "6",
+      "--proto", "=https", "--max-redirs", "0", "--max-filesize", "65536",
       "-H", "content-type: application/json", "-d", "{}",
       "https://api.beacondb.net/v1/geolocate"]
     stdout: StdioCollector {
@@ -352,10 +355,47 @@ Panel {
     command: ["bash", "-c",
       "d=\"$HOME/.cache/omarchy/ca.orospakr.ec-radar-weather\"; f=\"$d/site_list_towns_en.csv\"; mkdir -p \"$d\"; "
       + "if [ -e \"$f\" ] && [ -n \"$(find \"$f\" -newermt '-30 days' 2>/dev/null)\" ]; then exit 0; fi; "
-      + "curl -fsS --max-time 15 -o \"$f.tmp\" https://dd.weather.gc.ca/today/citypage_weather/docs/site_list_towns_en.csv && mv \"$f.tmp\" \"$f\""]
+      // HTTPS only on the fixed host, no redirects, and a download cap well
+      // above the ~33 KB real file (Model.parseSiteList bounds it again).
+      + "curl -fsS --max-time 15 --proto =https --max-redirs 0 --max-filesize 2000000 -o \"$f.tmp\" https://dd.weather.gc.ca/today/citypage_weather/docs/site_list_towns_en.csv && mv \"$f.tmp\" \"$f\""]
     onExited: function(exitCode) {
       if (exitCode === 0) cachedSitesFile.reload()
     }
+  }
+
+  // -------------------------------------------------------------- network
+  //
+  // Every URL this panel requests is built from a fixed host constant —
+  // geo.weather.gc.ca (radar capabilities and frames), dd.weather.gc.ca
+  // (citypage listings and XML, site list), weather.gc.ca (lightning),
+  // maps.geogratis.gc.ca (basemap) and api.beacondb.net (geoip) — and the
+  // only values interpolated into a path or query are numeric bbox/size
+  // values, ISO timestamps this panel formatted itself, and site/province
+  // codes that pass Weather.validSiteCode / validProvince. No remote-
+  // derived string ever reaches a URL host. QML's XMLHttpRequest follows
+  // redirects on its own (Qt refuses an HTTPS-to-HTTP downgrade), so the
+  // fixed HTTPS origins above are what pin those requests; the two curl
+  // calls are pinned explicitly (--proto =https, --max-redirs 0,
+  // --max-filesize). Every response body is size-checked before it is
+  // parsed or cached. Caps sit well above the real sizes measured on
+  // 2026-09-04: capabilities ~21 KB, hour listing ~72 KB, citypage XML
+  // ~34 KB, lightning metadata ~230 B, lightning bin ~64 KB at the tightest
+  // clustering (storm days run larger), geoip ~170 B, site list ~33 KB.
+  readonly property int capCapabilitiesChars: 2000000
+  readonly property int capListingChars: 2000000
+  readonly property int capCitypageChars: 1000000
+  readonly property int capLightningMetaChars: 65536
+  readonly property int capLightningBinChars: 8000000
+
+  // The response body if it is within `cap` chars, else null (and a note
+  // in the journal). A UTF-8 body has at least as many bytes as chars, so a
+  // char cap is never looser than the same byte cap.
+  function boundedResponse(xhr, cap, what) {
+    var text = String(xhr.responseText || "")
+    if (text.length <= cap) return text
+    console.warn("ca.orospakr.ec-radar-weather: " + what + " response too large ("
+      + text.length + " > " + cap + " chars); ignored")
+    return null
   }
 
   // -------------------------------------------------------------- weather
@@ -380,7 +420,10 @@ Panel {
 
   function requestWeather(force) {
     var site = activeSite
-    if (!site || !site.siteCode || !site.province || String(site.siteCode) === "legacy") {
+    // Only a well-formed code and province ever reach the URL builders.
+    // This also excludes a migrated "legacy" city, which has no site code.
+    if (!site || !Weather.validSiteCode(site.siteCode)
+        || !Weather.validProvince(String(site.province || "").toUpperCase())) {
       // Invalidate any in-flight fetch too: a late callback for the
       // previous tab must not repopulate the pane under this one.
       weatherEpoch++
@@ -418,7 +461,8 @@ Panel {
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== XMLHttpRequest.DONE) return
       if (epoch !== root.weatherEpoch) return
-      var file = xhr.status === 200 ? Weather.pickCitypageFile(xhr.responseText, code, "en") : null
+      var body = xhr.status === 200 ? root.boundedResponse(xhr, root.capListingChars, "citypage listing") : null
+      var file = body !== null ? Weather.pickCitypageFile(body, code, "en") : null
       if (file) root.fetchWeatherXml(urls[index] + file, code, epoch)
       else root.probeWeatherListing(urls, index + 1, code, epoch)
     }
@@ -433,7 +477,10 @@ Panel {
       if (epoch !== root.weatherEpoch) return
       var parsed = null
       if (xhr.status === 200) {
-        try { parsed = Weather.parseCitypage(xhr.responseText) } catch (e) { parsed = null }
+        var body = root.boundedResponse(xhr, root.capCitypageChars, "citypage XML")
+        if (body !== null) {
+          try { parsed = Weather.parseCitypage(body) } catch (e) { parsed = null }
+        }
       }
       root.weatherDone(epoch, code, parsed)
     }
@@ -506,6 +553,9 @@ Panel {
     + "&height=" + mapHeight
     + "&format=image/png"
 
+  // Image sources: both are fixed-host WMS GetMap URLs whose only variable
+  // parts are the numeric bbox/width/height above and, for radar frames, an
+  // ISO timestamp this panel formatted from the capabilities time grid.
   readonly property string basemapUrl: "https://maps.geogratis.gc.ca/wms/CBMT?service=WMS&version=1.3.0&request=GetMap&layers=CBMT&styles=" + geometryParams
 
   function frameUrl(time) {
@@ -704,8 +754,9 @@ Panel {
       root.fetching = false
       var ok = false
       if (xhr.status === 200) {
+        var body = root.boundedResponse(xhr, root.capCapabilitiesChars, "capabilities")
         try {
-          ok = root.applyCapabilities(xhr.responseText)
+          ok = body !== null && root.applyCapabilities(body)
         } catch (e) {
           ok = false
         }
@@ -732,7 +783,8 @@ Panel {
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== XMLHttpRequest.DONE) return
       if (gen !== root.lightningGen) return
-      var bins = xhr.status === 200 ? Lightning.parseMetadata(xhr.responseText) : []
+      var body = xhr.status === 200 ? root.boundedResponse(xhr, root.capLightningMetaChars, "lightning metadata") : null
+      var bins = body !== null ? Lightning.parseMetadata(body) : []
       if (bins.length === 0) {
         root.lightningFetching = false
         root.lightningFailed = true
@@ -785,7 +837,8 @@ Panel {
       xhr.onreadystatechange = function() {
         if (xhr.readyState !== XMLHttpRequest.DONE) return
         if (gen !== root.lightningGen) return
-        if (xhr.status === 200) root.lightningBins[iso] = Lightning.parseBin(xhr.responseText).points
+        var body = xhr.status === 200 ? root.boundedResponse(xhr, root.capLightningBinChars, "lightning bin") : null
+        if (body !== null) root.lightningBins[iso] = Lightning.parseBin(body).points
         else failed++
         if (--pending === 0) finish()
       }
@@ -906,6 +959,7 @@ Panel {
 
           iconComponent: Component {
             Text {
+              textFormat: Text.PlainText
               text: "󰐷"  // nf-md-radar
               color: root.foreground
               font.family: root.fontFamily
@@ -1270,6 +1324,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 visible: !root.autoOutOfRange
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
@@ -1295,6 +1350,7 @@ Panel {
               color: root.chipFill
 
               Text {
+                textFormat: Text.PlainText
                 id: lightningChipLabel
                 anchors.centerIn: parent
                 text: root.lightningChip
@@ -1318,6 +1374,7 @@ Panel {
               color: root.chipFill
 
               Text {
+                textFormat: Text.PlainText
                 id: pausedLabel
                 anchors.centerIn: parent
                 text: "PAUSED"
@@ -1341,6 +1398,7 @@ Panel {
               color: root.chipFill
 
               Text {
+                textFormat: Text.PlainText
                 id: framesChipLabel
                 anchors.centerIn: parent
                 text: root.framesChip
@@ -1364,6 +1422,7 @@ Panel {
               color: root.chipFill
 
               Text {
+                textFormat: Text.PlainText
                 id: frameLabelChip
                 anchors.centerIn: parent
                 text: root.frameLabel
@@ -1412,6 +1471,7 @@ Panel {
           implicitHeight: Math.max(attribution.implicitHeight, hint.implicitHeight)
 
           Text {
+            textFormat: Text.PlainText
             id: attribution
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
@@ -1422,6 +1482,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             id: hint
             anchors.left: attribution.right
             anchors.leftMargin: Style.space(16)

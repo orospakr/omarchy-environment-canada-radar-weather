@@ -168,6 +168,7 @@ Item {
     opacity: 0.9
 
     Text {
+      textFormat: Text.PlainText
       id: proxyLabel
       anchors.centerIn: parent
       text: root.dragging ? root.optionLabel(root.options[root.dragFrom]) : ""

@@ -12,6 +12,38 @@
 //     current UTC hour downward to 00 and take the newest file found.
 
 // ---------------------------------------------------------------------------
+// Bounds. The feed is untrusted input: every extracted string is truncated,
+// every list is capped, and an input larger than MAX_XML_CHARS is refused
+// outright, so a malformed or hostile payload can neither balloon memory
+// nor push oversized text into the UI. A real citypage file is ~35 KB with
+// 12 forecast periods, 24 hourly entries and a handful of warnings; the
+// longest real text field is a winter textSummary of a few hundred chars.
+// ---------------------------------------------------------------------------
+var MAX_XML_CHARS = 1000000;
+var MAX_TEXT_CHARS = 160;      // condition, period names, abbreviated summaries
+var MAX_SUMMARY_CHARS = 1000;  // full-sentence <textSummary>
+var MAX_WARNING_CHARS = 400;   // warning description
+var MAX_FORECASTS = 14;
+var MAX_HOURLY = 48;
+var MAX_WARNINGS = 10;
+
+// Truncate a string field to n chars; null/undefined pass through.
+function clip(s, n) {
+    if (s === null || s === undefined) return s;
+    s = String(s);
+    return s.length > n ? s.slice(0, n) : s;
+}
+
+// Site codes ("s0000458") and province codes ("ON") come from the remote
+// site list and end up in a URL path and a RegExp, so they are checked
+// against their exact shapes before use (every code in the published list
+// is "s" + 7 digits; provinces are two capitals).
+var SITE_CODE_RE = /^s\d{7}$/;
+var PROVINCE_RE = /^[A-Z]{2}$/;
+function validSiteCode(code) { return SITE_CODE_RE.test(String(code || "")); }
+function validProvince(prov) { return PROVINCE_RE.test(String(prov || "")); }
+
+// ---------------------------------------------------------------------------
 // Tiny tolerant XML helpers (regex over well-formed EC XML; good enough here)
 // ---------------------------------------------------------------------------
 
@@ -108,7 +140,8 @@ function padIcon(code) {
 // ---------------------------------------------------------------------------
 
 function parseCitypage(xmlText) {
-    if (!xmlText || xmlText.indexOf("<siteData") < 0) return null;
+    if (!xmlText || xmlText.length > MAX_XML_CHARS) return null;
+    if (xmlText.indexOf("<siteData") < 0) return null;
 
     // --- currentConditions (can be sparse or missing entirely at some sites)
     var current = {
@@ -119,7 +152,7 @@ function parseCitypage(xmlText) {
     var cc = firstElement(xmlText, "currentConditions");
     if (cc && cc.inner.trim() !== "") {
         current.temperature = numOf(textOf(cc.inner, "temperature"));
-        current.condition = textOf(cc.inner, "condition");
+        current.condition = clip(textOf(cc.inner, "condition"), MAX_TEXT_CHARS);
         current.iconCode = padIcon(textOf(cc.inner, "iconCode"));
         current.humidity = numOf(textOf(cc.inner, "relativeHumidity"));
         current.humidex = numOf(textOf(cc.inner, "humidex"));     // observed; often absent
@@ -130,7 +163,7 @@ function parseCitypage(xmlText) {
             current.wind = {
                 speed: numOf(textOf(w.inner, "speed")),      // km/h
                 gust: numOf(textOf(w.inner, "gust")),        // often empty -> null
-                direction: textOf(w.inner, "direction")      // e.g. "E", "VR"
+                direction: clip(textOf(w.inner, "direction"), MAX_TEXT_CHARS) // e.g. "E", "VR"
             };
         }
     }
@@ -142,7 +175,7 @@ function parseCitypage(xmlText) {
     if (fg) {
         issuedAt = utcDateTimeMs(fg.inner, "forecastIssue");
         var fEls = elements(fg.inner, "forecast");
-        for (var i = 0; i < fEls.length; i++) {
+        for (var i = 0; i < fEls.length && i < MAX_FORECASTS; i++) {
             var f = fEls[i].inner;
             var periodEl = firstElement(f, "period");
             var abbrev = firstElement(f, "abbreviatedForecast");
@@ -159,12 +192,12 @@ function parseCitypage(xmlText) {
             }
             forecasts.push({
                 // textForecastName is the friendly label ("Tonight", "Wednesday")
-                period: periodEl ? (attrOf(periodEl.open, "textForecastName") ||
-                                    decodeEntities(periodEl.inner.trim())) : null,
+                period: periodEl ? clip(attrOf(periodEl.open, "textForecastName") ||
+                                         decodeEntities(periodEl.inner.trim()), MAX_TEXT_CHARS) : null,
                 // First <textSummary> inside <forecast> is the direct child
                 // (full sentence forecast); <period> precedes it and holds none.
-                textSummary: textOf(f, "textSummary"),
-                summary: abbrev ? textOf(abbrev.inner, "textSummary") : null,
+                textSummary: clip(textOf(f, "textSummary"), MAX_SUMMARY_CHARS),
+                summary: abbrev ? clip(textOf(abbrev.inner, "textSummary"), MAX_TEXT_CHARS) : null,
                 iconCode: abbrev ? padIcon(textOf(abbrev.inner, "iconCode")) : null,
                 temperature: temperature,
                 pop: abbrev ? numOf(textOf(abbrev.inner, "pop")) : null
@@ -177,12 +210,12 @@ function parseCitypage(xmlText) {
     var hg = firstElement(xmlText, "hourlyForecastGroup");
     if (hg) {
         var hEls = elements(hg.inner, "hourlyForecast");
-        for (var j = 0; j < hEls.length; j++) {
+        for (var j = 0; j < hEls.length && j < MAX_HOURLY; j++) {
             var h = hEls[j];
             hourly.push({
                 at: stampToMs(attrOf(h.open, "dateTimeUTC")),
                 temperature: numOf(textOf(h.inner, "temperature")),
-                condition: textOf(h.inner, "condition"),
+                condition: clip(textOf(h.inner, "condition"), MAX_TEXT_CHARS),
                 iconCode: padIcon(textOf(h.inner, "iconCode")),
                 lop: numOf(textOf(h.inner, "lop")),          // chance of precip %
                 windChill: numOf(textOf(h.inner, "windChill")), // empty in summer
@@ -198,12 +231,12 @@ function parseCitypage(xmlText) {
     var wBlock = firstElement(xmlText, "warnings");
     if (wBlock) {
         var evs = elements(wBlock.inner, "event");
-        for (var k = 0; k < evs.length; k++) {
+        for (var k = 0; k < evs.length && k < MAX_WARNINGS; k++) {
             warnings.push({
-                description: attrOf(evs[k].open, "description"),
-                type: attrOf(evs[k].open, "type"),
-                priority: attrOf(evs[k].open, "priority") ||
-                          attrOf(evs[k].open, "alertColourLevel")
+                description: clip(attrOf(evs[k].open, "description"), MAX_WARNING_CHARS),
+                type: clip(attrOf(evs[k].open, "type"), MAX_TEXT_CHARS),
+                priority: clip(attrOf(evs[k].open, "priority") ||
+                               attrOf(evs[k].open, "alertColourLevel"), MAX_TEXT_CHARS)
             });
         }
     }
@@ -318,6 +351,7 @@ function warningColour(warning) {
 // 00/ has no match yet, keep the previously fetched data and retry later.
 function citypageProbeUrls(provinceCode, utcNowMs) {
     var prov = String(provinceCode).toUpperCase();
+    if (!validProvince(prov)) return []; // never interpolate an unvetted code into the path
     var hourNow = new Date(utcNowMs).getUTCHours();
     var urls = [];
     for (var h = hourNow; h >= 0; h--) {
@@ -332,6 +366,8 @@ function citypageProbeUrls(provinceCode, utcNowMs) {
 // the lexicographically greatest match is the newest. Returns filename or null.
 function pickCitypageFile(listingHtml, siteCode, lang) {
     if (!listingHtml) return null;
+    // siteCode lands inside a RegExp and the result inside a URL path.
+    if (!validSiteCode(siteCode) || !/^(en|fr)$/.test(String(lang))) return null;
     var re = new RegExp('href="([^"/]*_MSC_CitypageWeather_' + siteCode + "_" + lang + '\\.xml)"', "g");
     var best = null, m;
     while ((m = re.exec(listingHtml)) !== null) {

@@ -132,6 +132,7 @@ QQC.Popup {
       height: root.height - root.topPadding - root.bottomPadding - searchHeader.height - 1
 
       Text {
+        textFormat: Text.PlainText
         anchors.centerIn: parent
         visible: resultList.count === 0
         text: "No matches"
@@ -202,6 +203,7 @@ QQC.Popup {
 
             // Star column: the add/remove affordance.
             Text {
+              textFormat: Text.PlainText
               id: star
               anchors.verticalCenter: parent.verticalCenter
               text: starred ? "󰓎" : "󰓒" // nf-md-star / nf-md-star_outline
@@ -222,6 +224,7 @@ QQC.Popup {
               spacing: Style.spacing.xxs
 
               Text {
+                textFormat: Text.PlainText
                 text: modelData.name
                 color: index === resultList.currentIndex ? Style.hoverStateColor(root.foreground, root.accent) : root.foreground
                 font.family: root.fontFamily
@@ -230,6 +233,7 @@ QQC.Popup {
                 width: parent.width
               }
               Text {
+                textFormat: Text.PlainText
                 text: modelData.province + " · " + modelData.latitude.toFixed(2) + ", " + modelData.longitude.toFixed(2)
                 color: Qt.darker(root.foreground, 1.5)
                 font.family: root.fontFamily
