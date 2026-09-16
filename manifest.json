@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "ca.orospakr.ec-radar-weather",
   "name": "Environment Canada Radar & Weather",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "author": "Andrew Clunis",
   "license": "MIT",
   "description": "Environment Canada weather: animated radar loop, lightning strikes, current conditions, hourly and 7-day forecasts, multi-location tabs",

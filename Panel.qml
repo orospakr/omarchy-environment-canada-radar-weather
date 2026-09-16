@@ -263,35 +263,30 @@ Panel {
 
   function requestAutoFix() {
     if (!settingsInjected) return
-    if (geolocateProc.running) return
+    if (geoFetch.busy) return
     if (hasFix && !autoFixFailed
         && Date.now() - Number(autoFix.at || 0) < 3600000) return
-    geolocateProc.running = true
+    geoFetch.post("https://api.beacondb.net/v1/geolocate", "application/json", "{}")
   }
 
-  Process {
-    id: geolocateProc
-    // Pinned to HTTPS on the fixed host, no redirects, and a body cap far
-    // above the ~170-byte real response.
-    command: ["curl", "-fsS", "--max-time", "6",
-      "--proto", "=https", "--max-redirs", "0", "--max-filesize", "65536",
-      "-H", "content-type: application/json", "-d", "{}",
-      "https://api.beacondb.net/v1/geolocate"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var fix = Model.parseGeolocate(text)
-        if (!fix) {
-          // Keep any cached fix; the empty state only shows when there has
-          // never been one.
-          console.warn("ca.orospakr.ec-radar-weather: geolocate failed or returned no fix")
-          root.autoFixFailed = true
-          return
-        }
-        root.autoFixFailed = false
-        fix.at = Date.now()
-        root.persistSettings({ autoFix: fix })
+  Fetch {
+    id: geoFetch
+    what: "geolocate"
+    timeoutMs: 6000
+    retries: 1
+    cap: root.capGeolocateChars
+    onDone: function(body) {
+      var fix = body !== null ? Model.parseGeolocate(body) : null
+      if (!fix) {
+        // Keep any cached fix; the empty state only shows when there has
+        // never been one.
+        console.warn("ca.orospakr.ec-radar-weather: geolocate failed or returned no fix")
+        root.autoFixFailed = true
+        return
       }
+      root.autoFixFailed = false
+      fix.at = Date.now()
+      root.persistSettings({ autoFix: fix })
     }
   }
 
@@ -319,8 +314,9 @@ Panel {
   //
   // The Environment Canada citypage site list feeds both the "+" search
   // popup and the naming of the auto fix. A snapshot ships with the plugin
-  // so search works offline; a cache in ~/.cache is refreshed monthly and
-  // preferred when it parses.
+  // so search works offline; a cache in ~/.cache is refreshed monthly
+  // (dated by cache.json, see the basemap cache below) and preferred when
+  // it parses.
   property var sites: []
 
   readonly property string siteCacheDir: Quickshell.env("HOME") + "/.cache/omarchy/ca.orospakr.ec-radar-weather"
@@ -337,8 +333,12 @@ Panel {
     id: cachedSitesFile
     path: root.siteCacheDir + "/site_list_towns_en.csv"
     printErrors: false
+    atomicWrites: true
     onLoaded: if (!root.applySites(text())) bundledSitesFile.reload()
     onLoadFailed: bundledSitesFile.reload()
+    onSaveFailed: function(error) {
+      console.warn("ca.orospakr.ec-radar-weather: site list cache write failed (" + error + ")")
+    }
   }
 
   FileView {
@@ -349,17 +349,29 @@ Panel {
     onLoaded: if (root.sites.length === 0) root.applySites(text())
   }
 
-  Process {
-    id: siteListRefreshProc
-    running: true
-    command: ["bash", "-c",
-      "d=\"$HOME/.cache/omarchy/ca.orospakr.ec-radar-weather\"; f=\"$d/site_list_towns_en.csv\"; mkdir -p \"$d\"; "
-      + "if [ -e \"$f\" ] && [ -n \"$(find \"$f\" -newermt '-30 days' 2>/dev/null)\" ]; then exit 0; fi; "
-      // HTTPS only on the fixed host, no redirects, and a download cap well
-      // above the ~33 KB real file (Model.parseSiteList bounds it again).
-      + "curl -fsS --max-time 15 --proto =https --max-redirs 0 --max-filesize 2000000 -o \"$f.tmp\" https://dd.weather.gc.ca/today/citypage_weather/docs/site_list_towns_en.csv && mv \"$f.tmp\" \"$f\""]
-    onExited: function(exitCode) {
-      if (exitCode === 0) cachedSitesFile.reload()
+  // Runs once cache.json is in (it holds the last refresh time). A fresh
+  // copy is applied straight away and written back for the next start.
+  function refreshSiteList() {
+    var at = Number(cacheIndex.siteListAt || 0)
+    if (at > 0 && Date.now() - at < 30 * 86400000) return
+    siteListFetch.get("https://dd.weather.gc.ca/today/citypage_weather/docs/site_list_towns_en.csv", false)
+  }
+
+  Fetch {
+    id: siteListFetch
+    what: "site list"
+    timeoutMs: 15000
+    retries: 1
+    cap: root.capSiteListChars
+    onDone: function(body) {
+      // Model.parseSiteList bounds the text again; a copy that does not
+      // parse is not worth caching either. The refresh is dated here, not
+      // on save: FileView skips the write (and its saved signal) when the
+      // file already holds the same text, which is the usual case.
+      if (body === null || !root.applySites(body)) return
+      root.cacheIndex.siteListAt = Date.now()
+      root.saveCacheIndex()
+      cachedSitesFile.setText(body)
     }
   }
 
@@ -372,20 +384,26 @@ Panel {
   // only values interpolated into a path or query are numeric bbox/size
   // values, ISO timestamps this panel formatted itself, and site/province
   // codes that pass Weather.validSiteCode / validProvince. No remote-
-  // derived string ever reaches a URL host. QML's XMLHttpRequest follows
-  // redirects on its own (Qt refuses an HTTPS-to-HTTP downgrade), so the
-  // fixed HTTPS origins above are what pin those requests; the two curl
-  // calls are pinned explicitly (--proto =https, --max-redirs 0,
-  // --max-filesize). Every response body is size-checked before it is
-  // parsed or cached. Caps sit well above the real sizes measured on
+  // derived string ever reaches a URL host. Everything goes through QML's
+  // XMLHttpRequest from inside the shell process — no curl, no helper
+  // processes. Qt follows redirects on its own (an HTTPS-to-HTTP downgrade
+  // is refused), so the fixed HTTPS origins above are what pin the
+  // requests. Every response body is size-checked before it is parsed or
+  // cached, and the requests that write to disk (basemap, site list,
+  // geoip) go through Fetch.qml, which also gives them a hard deadline and
+  // bounded retries. Caps sit well above the real sizes measured on
   // 2026-09-04: capabilities ~21 KB, hour listing ~72 KB, citypage XML
   // ~34 KB, lightning metadata ~230 B, lightning bin ~64 KB at the tightest
-  // clustering (storm days run larger), geoip ~170 B, site list ~33 KB.
+  // clustering (storm days run larger), geoip ~170 B, site list ~33 KB,
+  // basemap PNG ~138 KB at the default span.
   readonly property int capCapabilitiesChars: 2000000
   readonly property int capListingChars: 2000000
   readonly property int capCitypageChars: 1000000
   readonly property int capLightningMetaChars: 65536
   readonly property int capLightningBinChars: 8000000
+  readonly property int capGeolocateChars: 65536
+  readonly property int capSiteListChars: 2000000
+  readonly property int capBasemapBytes: 4000000
 
   // The response body if it is within `cap` chars, else null (and a note
   // in the journal). A UTF-8 body has at least as many bytes as chars, so a
@@ -544,23 +562,222 @@ Panel {
   // height from the bbox so a degree of latitude and a degree of longitude
   // get the same number of pixels per kilometre (no east-west stretch).
   readonly property int mapWidth: Style.space(560)
-  readonly property int mapHeight: Math.max(120, Math.round(mapWidth * latSpan / lonSpan))
 
-  readonly property string bboxParam: minLat.toFixed(4) + "," + minLon.toFixed(4) + "," + maxLat.toFixed(4) + "," + maxLon.toFixed(4)
-  readonly property string geometryParams: "&crs=EPSG:4326"
-    + "&bbox=" + bboxParam
-    + "&width=" + mapWidth
-    + "&height=" + mapHeight
-    + "&format=image/png"
+  // The WMS geometry for any location at the current span and width. The
+  // active location's map and the basemap prefetch for every other tab
+  // share it, so the cache key below is exactly the request the map makes.
+  function geometryFor(lat, lon) {
+    var latDeg = spanKm / 111.0
+    var lonDeg = spanKm / (111.0 * Math.max(0.05, Math.cos(lat * Math.PI / 180)))
+    var w = mapWidth
+    var h = Math.max(120, Math.round(w * latDeg / lonDeg))
+    var bbox = (lat - latDeg / 2).toFixed(4) + "," + (lon - lonDeg / 2).toFixed(4)
+      + "," + (lat + latDeg / 2).toFixed(4) + "," + (lon + lonDeg / 2).toFixed(4)
+    return {
+      bbox: bbox,
+      width: w,
+      height: h,
+      params: "&crs=EPSG:4326&bbox=" + bbox + "&width=" + w + "&height=" + h + "&format=image/png",
+      // Digits, dots, minus signs and underscores only: safe as a file name.
+      key: bbox.replace(/,/g, "_") + "_" + w + "x" + h
+    }
+  }
+  readonly property var geometry: geometryFor(latitude, longitude)
+  readonly property int mapHeight: geometry.height
+  readonly property string bboxParam: geometry.bbox
+  readonly property string geometryParams: geometry.params
 
   // Image sources: both are fixed-host WMS GetMap URLs whose only variable
   // parts are the numeric bbox/width/height above and, for radar frames, an
   // ISO timestamp this panel formatted from the capabilities time grid.
-  readonly property string basemapUrl: "https://maps.geogratis.gc.ca/wms/CBMT?service=WMS&version=1.3.0&request=GetMap&layers=CBMT&styles=" + geometryParams
+  function basemapUrlFor(params) {
+    return "https://maps.geogratis.gc.ca/wms/CBMT?service=WMS&version=1.3.0&request=GetMap&layers=CBMT&styles=" + params
+  }
+  readonly property string basemapUrl: basemapUrlFor(geometryParams)
 
   function frameUrl(time) {
     return "https://geo.weather.gc.ca/geomet?service=WMS&version=1.3.0&request=GetMap&layers=RADAR_1KM_RRAI"
       + geometryParams + "&transparent=true&TIME=" + time
+  }
+
+  // -------------------------------------------------------- basemap cache
+  //
+  // A CBMT tile never changes for a given bbox, and GeoGratis stalls at
+  // connect time now and then, so the basemap for every configured tab is
+  // fetched once into ~/.cache and the map Image reads the file: opening
+  // the panel or switching tabs never waits on GeoGratis, shell restarts
+  // included. Fetches are serialised, active tab first, then the Auto fix
+  // and the saved cities, so a tab is warm before it is ever selected.
+  //
+  // cache.json is the index: which basemap keys are on disk (plus when the
+  // site list was last refreshed). A key whose file has gone missing or
+  // will not decode is evicted when the Image fails on it and refetched. A
+  // response that is not a PNG (WMS reports errors as HTTP 200 XML) is
+  // never written, and a failed key is left alone for ten minutes so a
+  // broken response cannot loop. Nothing here can grow past one small PNG
+  // per tab per span/width: the whole directory is safe to delete.
+  readonly property string cacheIndexPath: siteCacheDir + "/cache.json"
+  property var cacheIndex: ({ basemaps: {} })
+  property bool cacheIndexLoaded: false
+  // Bumped after every in-place mutation of cacheIndex/basemapFailed so
+  // bindings that read them re-evaluate.
+  property int cacheRev: 0
+
+  FileView {
+    id: cacheIndexFile
+    path: root.cacheIndexPath
+    printErrors: false
+    atomicWrites: true
+    onLoaded: root.applyCacheIndex(text())
+    onLoadFailed: root.applyCacheIndex("")
+  }
+
+  function applyCacheIndex(text) {
+    if (cacheIndexLoaded) return
+    var idx = null
+    try { idx = JSON.parse(String(text || "")) } catch (e) { idx = null }
+    if (!idx || typeof idx !== "object") idx = {}
+    if (!idx.basemaps || typeof idx.basemaps !== "object") idx.basemaps = {}
+    cacheIndex = idx
+    cacheIndexLoaded = true
+    cacheRev++
+    refreshSiteList()
+    scheduleBasemaps()
+  }
+
+  function saveCacheIndex() {
+    cacheRev++
+    cacheIndexFile.setText(JSON.stringify(cacheIndex))
+  }
+
+  function basemapPath(key) { return siteCacheDir + "/basemap_" + key + ".png" }
+
+  readonly property string basemapKey: geometry.key
+  property var basemapFailed: ({})   // key -> ms of the last failed fetch
+
+  // The map Image's source: the cached file, else the live URL once a fetch
+  // has failed (so a GeoGratis outage degrades to exactly the old
+  // behaviour), else nothing while the first fetch runs.
+  readonly property string basemapSource: {
+    var rev = cacheRev
+    if (!hasLocation) return ""
+    if (cacheIndex.basemaps[basemapKey]) return "file://" + basemapPath(basemapKey)
+    if (basemapFailed[basemapKey]) return basemapUrl
+    return ""
+  }
+
+  // Everything worth having on disk: the active view first, then the Auto
+  // fix and every saved city, all at the current span and width (through
+  // geometryFor, so a span or scale change re-queues the lot).
+  readonly property var wantedBasemaps: {
+    var out = []
+    if (hasLocation) out.push(geometryFor(latitude, longitude))
+    if (hasFix && !autoOutOfRange) out.push(geometryFor(Number(autoFix.latitude), Number(autoFix.longitude)))
+    for (var i = 0; i < locations.length; i++)
+      out.push(geometryFor(Number(locations[i].latitude), Number(locations[i].longitude)))
+    return out
+  }
+  onWantedBasemapsChanged: scheduleBasemaps()
+
+  property var basemapQueue: []
+  property var basemapCurrent: null
+
+  function scheduleBasemaps() {
+    if (!cacheIndexLoaded) return
+    var q = []
+    var seen = {}
+    var now = Date.now()
+    for (var i = 0; i < wantedBasemaps.length; i++) {
+      var g = wantedBasemaps[i]
+      if (seen[g.key] || cacheIndex.basemaps[g.key]) continue
+      if (basemapFailed[g.key] && now - basemapFailed[g.key] < 600000) continue
+      if (basemapCurrent && basemapCurrent.key === g.key) continue
+      seen[g.key] = true
+      q.push(g)
+    }
+    basemapQueue = q
+    pumpBasemaps()
+  }
+
+  function pumpBasemaps() {
+    if (basemapCurrent || basemapFetch.busy || basemapQueue.length === 0) return
+    var q = basemapQueue.slice()
+    basemapCurrent = q.shift()
+    basemapQueue = q
+    basemapFetch.get(basemapUrlFor(basemapCurrent.params), true)
+  }
+
+  function basemapFetchFailed(key) {
+    basemapFailed[key] = Date.now()
+    cacheRev++
+    basemapCurrent = null
+    pumpBasemaps()
+  }
+
+  function isPng(buf) {
+    if (!buf || buf.byteLength < 8) return false
+    var b = new Uint8Array(buf, 0, 8)
+    return b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47
+      && b[4] === 0x0D && b[5] === 0x0A && b[6] === 0x1A && b[7] === 0x0A
+  }
+
+  Fetch {
+    id: basemapFetch
+    what: "basemap"
+    timeoutMs: 8000
+    retries: 2
+    cap: root.capBasemapBytes
+    onDone: function(body) {
+      var g = root.basemapCurrent
+      if (!g) return
+      if (!root.isPng(body)) {
+        if (body !== null) console.warn("ca.orospakr.ec-radar-weather: basemap response is not a PNG; ignored")
+        root.basemapFetchFailed(g.key)
+        return
+      }
+      basemapWriter.path = root.basemapPath(g.key)
+      basemapWriter.setData(body)
+    }
+  }
+
+  FileView {
+    id: basemapWriter
+    preload: false     // write-only: never read the file back
+    printErrors: false
+    atomicWrites: true
+    onSaved: {
+      var g = root.basemapCurrent
+      if (g) {
+        root.cacheIndex.basemaps[g.key] = { at: Date.now() }
+        root.saveCacheIndex()
+      }
+      root.basemapCurrent = null
+      root.pumpBasemaps()
+    }
+    onSaveFailed: function(error) {
+      console.warn("ca.orospakr.ec-radar-weather: basemap cache write failed (" + error + ")")
+      var g = root.basemapCurrent
+      if (g) root.basemapFetchFailed(g.key)
+    }
+  }
+
+  // The Image could not use the cached file (a truncated write, a file
+  // damaged on disk): drop it from the index and fetch it again straight
+  // away. A key that fails a second time in the same session is held off
+  // like a failed fetch instead, so a server that keeps returning a broken
+  // PNG cannot spin the panel.
+  property var basemapEvicted: ({})
+  function evictBasemap(source) {
+    var m = /basemap_([0-9._x-]+)\.png$/.exec(String(source))
+    if (!m) return
+    var key = m[1]
+    if (!cacheIndex.basemaps[key]) return
+    console.warn("ca.orospakr.ec-radar-weather: cached basemap " + key + " failed to load; evicting")
+    delete cacheIndex.basemaps[key]
+    if (basemapEvicted[key]) basemapFailed[key] = Date.now()
+    basemapEvicted[key] = true
+    saveCacheIndex()
+    scheduleBasemaps()
   }
 
   // ------------------------------------------------------------- playback
@@ -745,6 +962,7 @@ Panel {
     if (autoActive && opened) requestAutoFix()
     requestWeather(force === true)
     refreshLightning()
+    scheduleBasemaps()
     if (fetching) return
     fetching = true
 
@@ -1089,7 +1307,13 @@ Panel {
                 id: basemap
                 anchors.fill: parent
                 asynchronous: true
-                source: root.hasLocation ? root.basemapUrl : ""
+                // Served from the on-disk cache (see "basemap cache").
+                source: root.basemapSource
+                cache: true
+                onStatusChanged: {
+                  if (status === Image.Error && String(source).indexOf("file://") === 0)
+                    root.evictBasemap(source)
+                }
                 // Knocked back so the radar returns stay the brightest thing on
                 // the map without the roads and shorelines becoming unreadable.
                 // The dark version needs a little more knock-back still.

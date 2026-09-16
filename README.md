@@ -47,6 +47,9 @@ The same panel on a light theme:
 - **Always warm** — radar frames and the forecast prefetch at shell startup
   and refresh in the background, so the panel opens instantly. Forecasts
   are cached per city, so switching tabs is instant and free.
+- **Basemaps on disk** — the CBMT basemap for every tab is fetched once
+  into `~/.cache` and read from there ever after, so neither a shell
+  restart nor a slow GeoGratis day can hold up the map.
 - **Dark basemap** — on a dark desktop the bright CBMT paper map is run
   through an invert + 180° hue-rotate shader; follows the desktop's
   light/dark setting live (`darkMap` below).
@@ -97,14 +100,14 @@ omarchy plugin remove ca.orospakr.ec-radar-weather
 ```
 
 That deletes the plugin directory and its bar entry. The only other files
-the plugin creates are a cached city list under
-`~/.cache/omarchy/ca.orospakr.ec-radar-weather/`, which you can delete by
-hand.
+the plugin creates are its cache under
+`~/.cache/omarchy/ca.orospakr.ec-radar-weather/` (the city list and one
+small basemap PNG per tab), which you can delete by hand.
 
 ## Requirements and what it touches
 
-- Omarchy with the Quattro shell (Quickshell). No extra packages: it uses
-  `curl`, `bash`, and coreutils, which Omarchy ships.
+- Omarchy with the Quattro shell (Quickshell). No extra packages and no
+  helper processes: every request is made from inside the shell process.
 - No root privileges, services, timers, or installers. Everything runs inside
   the shell process under your user.
 - **Network**: Environment Canada (`geo.weather.gc.ca`, `dd.weather.gc.ca`,
@@ -119,8 +122,9 @@ hand.
   remote-derived text is rendered as plain text (never rich text), the
   XML/CSV parsers bound input size, field lengths and list counts, every
   response is size-capped before it is parsed or cached, requests go only
-  to the fixed HTTPS hosts listed above, and the `curl` calls refuse
-  redirects, non-HTTPS protocols and oversized downloads.
+  to the fixed HTTPS hosts listed above, and anything written to disk is
+  fetched with a hard deadline and bounded retries (both Environment
+  Canada and GeoGratis stall at connect time now and then).
 
 ### Upgrading from `andrew.radar` (≤ 1.2.0)
 
@@ -244,13 +248,22 @@ Five services, no API keys:
 - **Basemap**: NRCan's
   [CBMT](https://www.nrcan.gc.ca/earth-sciences/geography/topographic-information/web-services/9110)
   WMS, requested with the same `EPSG:4326` bounding box so the layers
-  stack exactly.
+  stack exactly. Basemaps never change for a given box, so each one is
+  fetched once — active tab first, then the Auto fix and every saved
+  city — and written to `~/.cache/omarchy/ca.orospakr.ec-radar-weather/`
+  with a `cache.json` index; the map reads the file from then on. A
+  fetch that stalls is abandoned after a few seconds and retried, and if
+  it still fails the map falls back to loading the live URL directly.
 - **Auto location**: [BeaconDB](https://beacondb.net/)'s
   `/v1/geolocate` fallback (an MLS-compatible endpoint; an empty request
   body means "locate by IP"). City search uses the
   [citypage site list](https://dd.weather.gc.ca/today/citypage_weather/docs/)
   — a snapshot is bundled in `data/` for offline use and a copy in
   `~/.cache/omarchy/ca.orospakr.ec-radar-weather/` is refreshed monthly.
+- **Requests**: everything is plain `XMLHttpRequest` inside the shell
+  process. The fetches that write to disk (basemap, site list, geoip)
+  go through `Fetch.qml`, a small wrapper that adds the deadline, retries
+  and size cap QML's XHR lacks.
 
 The dark basemap is a small `ShaderEffect` applied as the basemap `Image`'s
 `layer.effect` (only when it is actually on — in light mode the layer is
@@ -262,9 +275,9 @@ The panel is a Quickshell/QML component following the Omarchy shell's
 `bar-widget` plugin contract (`manifest.json` + `BarWidget.qml` +
 `Panel.qml`, modelled on the built-in `omarchy.weather` plugin). All
 fetches are asynchronous — QML's `XMLHttpRequest` for capabilities,
-directory listings, and forecast XML, `curl` subprocesses for geoip and the
-site list, and network-sourced `Image` elements (decoded off the main
-thread) for frames — so the bar never blocks. Hourly times and sun times
+directory listings, forecast XML, geoip, the site list and the basemap,
+and network-sourced `Image` elements (decoded off the main thread) for
+frames — so the bar never blocks. Hourly times and sun times
 are shown in this machine's local timezone.
 
 Weather and radar data: [Environment and Climate Change Canada](https://weather.gc.ca/).
