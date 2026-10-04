@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""Owner-checked, no-follow access to the panel's on-disk cache.
+
+    ec-cache read NAME     the file on stdout (a basemap as base64)
+    ec-cache write NAME    replace the file with stdin (a basemap as base64)
+
+The cache lives in ~/.cache/omarchy/ca.orospakr.ec-radar-weather. Nothing in
+the shell touches that directory itself: every read and write goes through
+here, so no path the panel names can be redirected by a symlink.
+
+- The home directory comes from the password database, not $HOME. From
+  there each of .cache, omarchy and the plugin directory is opened relative
+  to the previous descriptor with O_DIRECTORY | O_NOFOLLOW (a write creates
+  a missing one 0700), and each descriptor is checked with fstat: a
+  directory, owned by the running uid, not group- or world-writable.
+- A read opens the file relative to that directory descriptor with
+  O_NOFOLLOW | O_NONBLOCK, then requires a regular file owned by the uid
+  with a single link and no larger than its cap; the read itself is capped.
+- A write creates a temp file with O_CREAT | O_EXCL | O_NOFOLLOW (0600)
+  relative to the directory descriptor, fsyncs it and renames it over the
+  target through the same descriptor. A symlink at the target is replaced,
+  never written through.
+
+Every step after the first open is relative to a descriptor that has
+already been checked, so swapping a path component for a link between a
+check and a use cannot redirect anything.
+
+NAME is one of a fixed set: cache.json, site_list_towns_en.csv, or
+basemap_<key>.png with <key> drawn from [0-9._x-]. Contents are validated
+in both directions: JSON must be an object, the site list UTF-8, a basemap
+a PNG.
+
+Exit status: 0 done, 3 no such file (read), 2 usage, 1 anything else, with
+one line on stderr.
+"""
+
+import base64
+import json
+import os
+import pwd
+import re
+import stat
+import sys
+
+CACHE_DIR = (".cache", "omarchy", "ca.orospakr.ec-radar-weather")
+
+# Well above the real sizes (cache.json ~0.5 KB, site list ~33 KB, basemap
+# ~160 KB) and matching the panel's own response caps.
+TEXT_CAPS = {
+    "cache.json": 65536,
+    "site_list_towns_en.csv": 2000000,
+}
+BASEMAP_CAP = 4000000
+BASEMAP_NAME = re.compile(r"basemap_[0-9._x-]{1,96}\.png\Z")
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
+WRITE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NOCTTY | os.O_CLOEXEC
+
+
+class Missing(Exception):
+    pass
+
+
+class Refused(Exception):
+    pass
+
+
+def check_dir(fd, label):
+    st = os.fstat(fd)
+    if not stat.S_ISDIR(st.st_mode):
+        raise Refused(label + " is not a directory")
+    if st.st_uid != os.getuid():
+        raise Refused(label + " is not owned by this user")
+    if st.st_mode & 0o022:
+        raise Refused(label + " is group- or world-writable")
+
+
+def open_cache_dir(create):
+    home = pwd.getpwuid(os.getuid()).pw_dir
+    fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        check_dir(fd, "the home directory")
+        label = "~"
+        for part in CACHE_DIR:
+            label += "/" + part
+            try:
+                child = os.open(part, DIR_FLAGS, dir_fd=fd)
+            except FileNotFoundError:
+                if not create:
+                    raise Missing(label)
+                try:
+                    os.mkdir(part, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                child = os.open(part, DIR_FLAGS, dir_fd=fd)
+            except OSError as e:
+                # ELOOP (a symlink) or ENOTDIR (some other kind of file).
+                raise Refused(label + " is not a plain directory (" + e.strerror + ")")
+            try:
+                check_dir(child, label)
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def cap_for(name):
+    if name in TEXT_CAPS:
+        return TEXT_CAPS[name]
+    if BASEMAP_NAME.match(name):
+        return BASEMAP_CAP
+    return None
+
+
+def validate(name, data):
+    if name == "cache.json":
+        if not isinstance(json.loads(data.decode("utf-8")), dict):
+            raise ValueError("not a JSON object")
+    elif name.endswith(".csv"):
+        data.decode("utf-8")
+    elif not data.startswith(PNG_MAGIC):
+        raise ValueError("not a PNG")
+
+
+def read_capped(fd, cap):
+    chunks = []
+    total = 0
+    while total <= cap:
+        chunk = os.read(fd, min(65536, cap + 1 - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    if total > cap:
+        raise Refused("larger than " + str(cap) + " bytes")
+    return b"".join(chunks)
+
+
+def do_read(name, cap):
+    dfd = open_cache_dir(create=False)
+    try:
+        try:
+            fd = os.open(name, READ_FLAGS, dir_fd=dfd)
+        except FileNotFoundError:
+            raise Missing(name)
+        except OSError as e:
+            raise Refused(name + " cannot be opened (" + e.strerror + ")")
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise Refused(name + " is not a regular file")
+            if st.st_uid != os.getuid():
+                raise Refused(name + " is not owned by this user")
+            if st.st_nlink != 1:
+                raise Refused(name + " has more than one link")
+            if st.st_size > cap:
+                raise Refused(name + " is larger than " + str(cap) + " bytes")
+            data = read_capped(fd, cap)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dfd)
+    try:
+        validate(name, data)
+    except ValueError as e:
+        raise Refused(name + " is damaged (" + str(e) + ")")
+    if name.endswith(".png"):
+        data = base64.b64encode(data)
+    sys.stdout.buffer.write(data)
+
+
+def do_write(name, cap):
+    if name.endswith(".png"):
+        encoded = read_capped(sys.stdin.fileno(), (cap + 2) // 3 * 4)
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except ValueError:
+            raise Refused("stdin is not base64")
+    else:
+        data = read_capped(sys.stdin.fileno(), cap)
+    try:
+        validate(name, data)
+    except ValueError as e:
+        raise Refused("refusing to cache " + name + " (" + str(e) + ")")
+
+    dfd = open_cache_dir(create=True)
+    try:
+        tmp = "." + name + "." + str(os.getpid()) + ".tmp"
+        fd = os.open(tmp, WRITE_FLAGS, 0o600, dir_fd=dfd)
+        try:
+            try:
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(fd, view):]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.rename(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd=dfd)
+            except OSError:
+                pass
+            raise
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+def main(argv):
+    if len(argv) != 3 or argv[1] not in ("read", "write"):
+        sys.stderr.write("usage: ec-cache read|write NAME\n")
+        return 2
+    name = argv[2]
+    cap = cap_for(name)
+    if cap is None:
+        sys.stderr.write("ec-cache: not a cache file name: " + repr(name) + "\n")
+        return 2
+    try:
+        if argv[1] == "read":
+            do_read(name, cap)
+        else:
+            do_write(name, cap)
+    except Missing:
+        return 3
+    except Refused as e:
+        sys.stderr.write("ec-cache: " + str(e) + "\n")
+        return 1
+    except OSError as e:
+        sys.stderr.write("ec-cache: " + argv[1] + " " + name + ": " + e.strerror + "\n")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -320,12 +320,10 @@ Panel {
   //
   // The Environment Canada citypage site list feeds both the "+" search
   // popup and the naming of the auto fix. A snapshot ships with the plugin
-  // so search works offline; a cache in ~/.cache is refreshed monthly
-  // (dated by cache.json, see the basemap cache below) and preferred when
-  // it parses.
+  // so search works offline; a cached copy (see "disk cache" below) is
+  // refreshed monthly, dated by cache.json, and preferred when it parses.
   property var sites: []
 
-  readonly property string siteCacheDir: Quickshell.env("HOME") + "/.cache/omarchy/ca.orospakr.ec-radar-weather"
   readonly property string bundledSitesPath: Qt.resolvedUrl("data/site_list_towns_en.csv").toString().replace(/^file:\/\//, "")
 
   function applySites(text) {
@@ -335,16 +333,10 @@ Panel {
     return true
   }
 
-  FileView {
-    id: cachedSitesFile
-    path: root.siteCacheDir + "/site_list_towns_en.csv"
-    printErrors: false
-    atomicWrites: true
-    onLoaded: if (!root.applySites(text())) bundledSitesFile.reload()
-    onLoadFailed: bundledSitesFile.reload()
-    onSaveFailed: function(error) {
-      console.warn("ca.orospakr.ec-radar-weather: site list cache write failed (" + error + ")")
-    }
+  function loadCachedSites() {
+    diskCache.read("site_list_towns_en.csv", function(ok, text) {
+      if (ok) root.applySites(text)
+    })
   }
 
   FileView {
@@ -371,13 +363,14 @@ Panel {
     cap: root.capSiteListChars
     onDone: function(body) {
       // Model.parseSiteList bounds the text again; a copy that does not
-      // parse is not worth caching either. The refresh is dated here, not
-      // on save: FileView skips the write (and its saved signal) when the
-      // file already holds the same text, which is the usual case.
+      // parse is not worth caching either. The refresh is dated once the
+      // copy is on disk, so a failed write is retried at the next start.
       if (body === null || !root.applySites(body)) return
-      root.cacheIndex.siteListAt = Date.now()
-      root.saveCacheIndex()
-      cachedSitesFile.setText(body)
+      diskCache.write("site_list_towns_en.csv", body, function(ok) {
+        if (!ok) return
+        root.cacheIndex.siteListAt = Date.now()
+        root.saveCacheIndex()
+      })
     }
   }
 
@@ -391,8 +384,9 @@ Panel {
   // values, ISO timestamps this panel formatted itself, and site/province
   // codes that pass Weather.validSiteCode / validProvince. No remote-
   // derived string ever reaches a URL host. Everything goes through QML's
-  // XMLHttpRequest from inside the shell process — no curl, no helper
-  // processes. Qt follows redirects on its own (an HTTPS-to-HTTP downgrade
+  // XMLHttpRequest from inside the shell process — no curl; the one helper
+  // process (bin/ec-cache) only reads and writes the disk cache and never
+  // touches the network. Qt follows redirects on its own (an HTTPS-to-HTTP downgrade
   // is refused), so the fixed HTTPS origins above are what pin the
   // requests. Every response body is size-checked before it is parsed or
   // cached, and the requests that write to disk (basemap, site list,
@@ -606,36 +600,49 @@ Panel {
       + geometryParams + "&transparent=true&TIME=" + time
   }
 
-  // -------------------------------------------------------- basemap cache
+  // ----------------------------------------------------------- disk cache
   //
   // A CBMT tile never changes for a given bbox, and GeoGratis stalls at
   // connect time now and then, so the basemap for every configured tab is
-  // fetched once into ~/.cache and the map Image reads the file: opening
-  // the panel or switching tabs never waits on GeoGratis, shell restarts
-  // included. Fetches are serialised, active tab first, then the Auto fix
-  // and the saved cities, so a tab is warm before it is ever selected.
+  // fetched once into ~/.cache/omarchy/ca.orospakr.ec-radar-weather and
+  // read back from there: opening the panel or switching tabs never waits
+  // on GeoGratis, shell restarts included. Work is serialised, active tab
+  // first, then the Auto fix and the saved cities, so a tab is warm before
+  // it is ever selected.
+  //
+  // The shell never opens that directory itself. Every read and write goes
+  // through Cache.qml to bin/ec-cache, which walks the path with no-follow,
+  // owner-checked directory descriptors, refuses anything but a small
+  // regular file it owns, and replaces files atomically. A basemap comes
+  // back as base64 and the map Image shows it as a data: URL, so not even
+  // the image loader opens a path under ~/.cache.
   //
   // cache.json is the index: which basemap keys are on disk (plus when the
-  // site list was last refreshed). A key whose file has gone missing or
-  // will not decode is evicted when the Image fails on it and refetched. A
-  // response that is not a PNG (WMS reports errors as HTTP 200 XML) is
-  // never written, and a failed key is left alone for ten minutes so a
-  // broken response cannot loop. Nothing here can grow past one small PNG
-  // per tab per span/width: the whole directory is safe to delete.
-  readonly property string cacheIndexPath: siteCacheDir + "/cache.json"
+  // site list was last refreshed). A key whose file has gone missing, is
+  // refused, or will not decode is evicted and refetched. A response that
+  // is not a PNG (WMS reports errors as HTTP 200 XML) is never written, and
+  // a failed key is left alone for ten minutes so a broken response cannot
+  // loop. Only the wanted tabs' basemaps are held in memory, and the whole
+  // directory is safe to delete.
   property var cacheIndex: ({ basemaps: {} })
   property bool cacheIndexLoaded: false
-  // Bumped after every in-place mutation of cacheIndex/basemapFailed so
-  // bindings that read them re-evaluate.
+  // Bumped after every in-place mutation of cacheIndex/basemapFailed/
+  // basemapData so bindings that read them re-evaluate.
   property int cacheRev: 0
 
-  FileView {
-    id: cacheIndexFile
-    path: root.cacheIndexPath
-    printErrors: false
-    atomicWrites: true
-    onLoaded: root.applyCacheIndex(text())
-    onLoadFailed: root.applyCacheIndex("")
+  Cache { id: diskCache }
+
+  // The site list is queued first, so a cached copy is in before the index
+  // can decide to refresh it.
+  Component.onCompleted: {
+    loadCachedSites()
+    loadCacheIndex()
+  }
+
+  function loadCacheIndex() {
+    diskCache.read("cache.json", function(ok, text) {
+      root.applyCacheIndex(ok ? text : "")
+    })
   }
 
   function applyCacheIndex(text) {
@@ -653,26 +660,27 @@ Panel {
 
   function saveCacheIndex() {
     cacheRev++
-    cacheIndexFile.setText(JSON.stringify(cacheIndex))
+    diskCache.write("cache.json", JSON.stringify(cacheIndex))
   }
 
-  function basemapPath(key) { return siteCacheDir + "/basemap_" + key + ".png" }
+  function basemapName(key) { return "basemap_" + key + ".png" }
 
   readonly property string basemapKey: geometry.key
   property var basemapFailed: ({})   // key -> ms of the last failed fetch
+  property var basemapData: ({})     // key -> data: URL, wanted keys only
 
-  // The map Image's source: the cached file, else the live URL once a fetch
-  // has failed (so a GeoGratis outage degrades to exactly the old
-  // behaviour), else nothing while the first fetch runs.
+  // The map Image's source: the cached basemap, else the live URL once a
+  // fetch has failed (so a GeoGratis outage degrades to exactly the old
+  // behaviour), else nothing while the first read or fetch runs.
   readonly property string basemapSource: {
     var rev = cacheRev
     if (!hasLocation) return ""
-    if (cacheIndex.basemaps[basemapKey]) return "file://" + basemapPath(basemapKey)
+    if (basemapData[basemapKey]) return basemapData[basemapKey]
     if (basemapFailed[basemapKey]) return basemapUrl
     return ""
   }
 
-  // Everything worth having on disk: the active view first, then the Auto
+  // Everything worth having on hand: the active view first, then the Auto
   // fix and every saved city, all at the current span and width (through
   // geometryFor, so a span or scale change re-queues the lot).
   readonly property var wantedBasemaps: {
@@ -695,22 +703,51 @@ Panel {
     var now = Date.now()
     for (var i = 0; i < wantedBasemaps.length; i++) {
       var g = wantedBasemaps[i]
-      if (seen[g.key] || cacheIndex.basemaps[g.key]) continue
+      if (seen[g.key]) continue
+      seen[g.key] = true
+      if (basemapData[g.key]) continue
       if (basemapFailed[g.key] && now - basemapFailed[g.key] < 600000) continue
       if (basemapCurrent && basemapCurrent.key === g.key) continue
-      seen[g.key] = true
       q.push(g)
     }
+    // Let go of basemaps no tab shows any more; they stay on disk.
+    var dropped = false
+    for (var key in basemapData) {
+      if (seen[key]) continue
+      delete basemapData[key]
+      dropped = true
+    }
+    if (dropped) cacheRev++
     basemapQueue = q
     pumpBasemaps()
   }
 
+  // Disk first when the index has the key; the network otherwise, or when
+  // the cached copy cannot be read.
   function pumpBasemaps() {
     if (basemapCurrent || basemapFetch.busy || basemapQueue.length === 0) return
     var q = basemapQueue.slice()
-    basemapCurrent = q.shift()
+    var g = q.shift()
     basemapQueue = q
-    basemapFetch.get(basemapUrlFor(basemapCurrent.params), true)
+    basemapCurrent = g
+    if (!cacheIndex.basemaps[g.key]) {
+      basemapFetch.get(basemapUrlFor(g.params), true)
+      return
+    }
+    diskCache.read(basemapName(g.key), function(ok, b64) {
+      if (!root.basemapCurrent || root.basemapCurrent.key !== g.key) return
+      b64 = ok ? b64.trim() : ""
+      if (b64.length > 0) {
+        root.basemapData[g.key] = "data:image/png;base64," + b64
+        root.cacheRev++
+        root.basemapCurrent = null
+        root.pumpBasemaps()
+        return
+      }
+      delete root.cacheIndex.basemaps[g.key]
+      root.saveCacheIndex()
+      basemapFetch.get(root.basemapUrlFor(g.params), true)
+    })
   }
 
   function basemapFetchFailed(key) {
@@ -741,48 +778,41 @@ Panel {
         root.basemapFetchFailed(g.key)
         return
       }
-      basemapWriter.path = root.basemapPath(g.key)
-      basemapWriter.setData(body)
-    }
-  }
-
-  FileView {
-    id: basemapWriter
-    preload: false     // write-only: never read the file back
-    printErrors: false
-    atomicWrites: true
-    onSaved: {
-      var g = root.basemapCurrent
-      if (g) {
+      // Shown straight away; indexed once it is safely on disk.
+      var b64 = diskCache.base64(body)
+      root.basemapData[g.key] = "data:image/png;base64," + b64
+      root.cacheRev++
+      diskCache.write(root.basemapName(g.key), b64, function(ok) {
+        if (!ok) return
         root.cacheIndex.basemaps[g.key] = { at: Date.now() }
         root.saveCacheIndex()
-      }
+      })
       root.basemapCurrent = null
       root.pumpBasemaps()
     }
-    onSaveFailed: function(error) {
-      console.warn("ca.orospakr.ec-radar-weather: basemap cache write failed (" + error + ")")
-      var g = root.basemapCurrent
-      if (g) root.basemapFetchFailed(g.key)
-    }
   }
 
-  // The Image could not use the cached file (a truncated write, a file
-  // damaged on disk): drop it from the index and fetch it again straight
+  // The Image could not decode a basemap (damaged on disk in a way the
+  // PNG signature check let through): drop it and fetch it again straight
   // away. A key that fails a second time in the same session is held off
   // like a failed fetch instead, so a server that keeps returning a broken
   // PNG cannot spin the panel.
   property var basemapEvicted: ({})
   function evictBasemap(source) {
-    var m = /basemap_([0-9._x-]+)\.png$/.exec(String(source))
-    if (!m) return
-    var key = m[1]
-    if (!cacheIndex.basemaps[key]) return
+    var key = null
+    for (var k in basemapData) {
+      if (basemapData[k] === String(source)) { key = k; break }
+    }
+    if (key === null) return
     console.warn("ca.orospakr.ec-radar-weather: cached basemap " + key + " failed to load; evicting")
-    delete cacheIndex.basemaps[key]
+    delete basemapData[key]
+    if (cacheIndex.basemaps[key]) {
+      delete cacheIndex.basemaps[key]
+      saveCacheIndex()
+    }
     if (basemapEvicted[key]) basemapFailed[key] = Date.now()
     basemapEvicted[key] = true
-    saveCacheIndex()
+    cacheRev++
     scheduleBasemaps()
   }
 
@@ -1313,11 +1343,11 @@ Panel {
                 id: basemap
                 anchors.fill: parent
                 asynchronous: true
-                // Served from the on-disk cache (see "basemap cache").
+                // Served from the disk cache (see "disk cache") as a data: URL.
                 source: root.basemapSource
                 cache: true
                 onStatusChanged: {
-                  if (status === Image.Error && String(source).indexOf("file://") === 0)
+                  if (status === Image.Error && String(source).indexOf("data:") === 0)
                     root.evictBasemap(source)
                 }
                 // Knocked back so the radar returns stay the brightest thing on

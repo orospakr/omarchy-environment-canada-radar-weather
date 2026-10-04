@@ -106,8 +106,10 @@ small basemap PNG per tab), which you can delete by hand.
 
 ## Requirements and what it touches
 
-- Omarchy with the Quattro shell (Quickshell). No extra packages and no
-  helper processes: every request is made from inside the shell process.
+- Omarchy with the Quattro shell (Quickshell). No extra packages: every
+  network request is made from inside the shell process, and the one
+  helper, `bin/ec-cache`, is a short Python script (Python ships with
+  Omarchy) that only reads and writes the cache directory.
 - No root privileges, services, timers, or installers. Everything runs inside
   the shell process under your user.
 - **Network**: Environment Canada (`geo.weather.gc.ca`, `dd.weather.gc.ca`,
@@ -124,7 +126,14 @@ small basemap PNG per tab), which you can delete by hand.
   response is size-capped before it is parsed or cached, requests go only
   to the fixed HTTPS hosts listed above, and anything written to disk is
   fetched with a hard deadline and bounded retries (both Environment
-  Canada and GeoGratis stall at connect time now and then).
+  Canada and GeoGratis stall at connect time now and then). The shell
+  never opens the cache directory itself: `bin/ec-cache` walks
+  `~/.cache/omarchy/ca.orospakr.ec-radar-weather` from the home directory
+  in the password database with no-follow, owner-checked directory
+  descriptors, reads only small regular files it owns, and replaces files
+  atomically relative to the checked directory, so a symlink anywhere on
+  that path can neither redirect a write nor feed the panel another
+  file.
 
 ### Upgrading from `andrew.radar` (≤ 1.2.0)
 
@@ -251,7 +260,8 @@ Five services, no API keys:
   stack exactly. Basemaps never change for a given box, so each one is
   fetched once — active tab first, then the Auto fix and every saved
   city — and written to `~/.cache/omarchy/ca.orospakr.ec-radar-weather/`
-  with a `cache.json` index; the map reads the file from then on. A
+  with a `cache.json` index; from then on it is read back from there
+  (as a `data:` URL, so even the map `Image` never opens the path). A
   fetch that stalls is abandoned after a few seconds and retried, and if
   it still fails the map falls back to loading the live URL directly.
 - **Auto location**: [BeaconDB](https://beacondb.net/)'s
@@ -264,6 +274,10 @@ Five services, no API keys:
   process. The fetches that write to disk (basemap, site list, geoip)
   go through `Fetch.qml`, a small wrapper that adds the deadline, retries
   and size cap QML's XHR lacks.
+- **Disk cache**: `Cache.qml` queues reads and writes for `bin/ec-cache`,
+  one at a time under a deadline. The helper accepts only the fixed file
+  names (`cache.json`, the site list, `basemap_<bbox>.png`), validates
+  contents both ways (a JSON object, UTF-8 text, a PNG), and caps sizes.
 
 The dark basemap is a small `ShaderEffect` applied as the basemap `Image`'s
 `layer.effect` (only when it is actually on — in light mode the layer is
